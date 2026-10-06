@@ -24,6 +24,7 @@ import { useRateLimit } from "@/hooks/useRateLimit";
 import { SeatOccupancyHeatmap } from "@/components/venue/SeatOccupancyHeatmap";
 import { useSeatHoldLock } from "@/hooks/useSeatHoldLock";
 import { CopyToClipboardButton } from "@/components/ui/CopyToClipboardButton";
+import { VenueLiveVibeWidget } from "@/components/venue/VenueLiveVibeWidget";
 
 type Seat = {
   id: string;
@@ -393,6 +394,8 @@ export default function ReservationClient({ venue }: { venue: Venue }) {
         )}
 
         <div className="space-y-6">
+          <VenueLiveVibeWidget venueId={venue.id} />
+
           <SeatOccupancyHeatmap
             venueId={venue.id}
             selectedDate={date}
