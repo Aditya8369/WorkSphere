@@ -22,6 +22,7 @@ import { VenueShareModal } from "@/components/venue/VenueShareModal";
 import { generateVenueJsonLd } from "@/lib/seo/venueJsonLd";
 import { getVenueCoverTransitionName } from "@/lib/viewTransitions";
 import { VenueLiveVibeWidget } from "@/components/venue/VenueLiveVibeWidget";
+import { CommuteCarbonEstimator } from "@/components/venue/CommuteCarbonEstimator";
 
 interface PageProps {
   params: Promise<{ id: string }>;
@@ -270,6 +271,13 @@ export default async function VenuePage({ params }: PageProps) {
             </div>
 
             <VenueSummary venueId={venue.id} />
+
+            {/* Commute & Carbon Footprint Estimator */}
+            <CommuteCarbonEstimator
+              venueLatitude={venue.latitude}
+              venueLongitude={venue.longitude}
+              venueName={venue.name}
+            />
 
             <div className="pt-2">
               <h3 className="text-xs font-black uppercase tracking-widest text-zinc-500 mb-3 flex items-center gap-2">
