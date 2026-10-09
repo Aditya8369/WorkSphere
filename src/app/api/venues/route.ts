@@ -442,33 +442,19 @@ export async function GET(req: NextRequest) {
 
       // Build fallback query without the strict text query condition
       const fallbackWhere = { ...where };
-      if (fallbackWhere.AND && Array.isArray(fallbackWhere.AND)) {
+      if (fallbackWhere.AND) {
         fallbackWhere.AND = fallbackWhere.AND.filter((cond: any) => {
           if (!cond.OR || !Array.isArray(cond.OR)) return true;
-          const matchesQuery = cond.OR.some(
+          const isQueryCond = cond.OR.some(
             (c: any) =>
               c.name?.contains === querySearch ||
               c.address?.contains === querySearch,
           );
-          return !matchesQuery;
+          return !isQueryCond;
         });
-        if (fallbackWhere.AND.length === 1 && fallbackWhere.AND[0].OR) {
-          fallbackWhere.OR = fallbackWhere.AND[0].OR;
-          delete fallbackWhere.AND;
-        } else if (fallbackWhere.AND.length === 0) {
-          delete fallbackWhere.AND;
-        }
-      } else if (fallbackWhere.OR) {
-        const isQueryOnly =
-          Array.isArray(fallbackWhere.OR) &&
-          fallbackWhere.OR.some(
-            (c: any) =>
-              c.name?.contains === querySearch ||
-              c.address?.contains === querySearch,
-          );
-        if (isQueryOnly) {
-          delete fallbackWhere.OR;
-        }
+        if (fallbackWhere.AND.length === 0) delete fallbackWhere.AND;
+      } else {
+        delete fallbackWhere.OR;
       }
 
       const allCandidates = await prisma.venue.findMany({
