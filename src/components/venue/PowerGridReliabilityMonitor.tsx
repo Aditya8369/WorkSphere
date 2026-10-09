@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
   Zap,
   Plug,
@@ -16,6 +16,7 @@ import {
   Smartphone,
   Tablet,
   Flag,
+  Radio,
 } from "lucide-react";
 import type {
   VenuePowerGridSummary,
@@ -26,36 +27,180 @@ import type {
 interface PowerGridReliabilityMonitorProps {
   venueId?: string;
   venueName?: string;
+  wsUrl?: string;
+  enableLiveUpdates?: boolean;
 }
 
 export default function PowerGridReliabilityMonitor({
   venueId = "venue-sf-01",
   venueName = "Mission Focus Coworking & Cafe",
+  wsUrl,
+  enableLiveUpdates = true,
 }: PowerGridReliabilityMonitorProps) {
   const [summary, setSummary] = useState<VenuePowerGridSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [reportingNode, setReportingNode] = useState<DeskPowerNode | null>(null);
   const [reportSuccessMsg, setReportSuccessMsg] = useState<string | null>(null);
   const [submittingReport, setSubmittingReport] = useState(false);
+  const [wsConnected, setWsConnected] = useState(false);
 
-  const fetchPowerGrid = async () => {
+  // Lifecycle and cleanup references to prevent unmounted memory leaks
+  const isMountedRef = useRef(true);
+  const successTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const socketRef = useRef<WebSocket | null>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
+
+  // Track component mount status and cleanup timeouts/aborts on unmount
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+      if (successTimeoutRef.current) {
+        clearTimeout(successTimeoutRef.current);
+      }
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
+    };
+  }, []);
+
+  const fetchPowerGrid = useCallback(async () => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+
     setLoading(true);
     try {
-      const res = await fetch(`/api/telemetry/outlets?venueId=${venueId}`);
+      const res = await fetch(`/api/telemetry/outlets?venueId=${venueId}`, {
+        signal: controller.signal,
+      });
       const data = await res.json();
-      if (data.success) {
+      if (data.success && isMountedRef.current) {
         setSummary(data.summary);
       }
-    } catch (err) {
-      console.error("Failed to load power grid telemetry:", err);
+    } catch (err: unknown) {
+      if ((err as Error)?.name !== "AbortError") {
+        console.error("Failed to load power grid telemetry:", err);
+      }
     } finally {
-      setLoading(false);
+      if (isMountedRef.current) {
+        setLoading(false);
+      }
     }
-  };
+  }, [venueId]);
 
   useEffect(() => {
     fetchPowerGrid();
-  }, [venueId]);
+  }, [fetchPowerGrid]);
+
+  // Real-time WebSocket and custom event listeners with comprehensive unmount cleanup
+  useEffect(() => {
+    if (!enableLiveUpdates) return;
+
+    let socket: WebSocket | null = null;
+    let isSubscribed = true;
+
+    const handleCustomEvent = (event: Event) => {
+      if (!isSubscribed || !isMountedRef.current) return;
+      const customEvent = event as CustomEvent<
+        VenuePowerGridSummary | { type: string; summary?: VenuePowerGridSummary }
+      >;
+      if (customEvent.detail) {
+        const payload =
+          "summary" in customEvent.detail && customEvent.detail.summary
+            ? customEvent.detail.summary
+            : (customEvent.detail as VenuePowerGridSummary);
+        if (payload && payload.venueId === venueId && isMountedRef.current) {
+          setSummary(payload);
+        }
+      }
+    };
+
+    window.addEventListener("worksphere:power-grid-telemetry", handleCustomEvent);
+
+    // If WebSocket is supported and host is configured
+    if (typeof WebSocket !== "undefined") {
+      try {
+        const host =
+          wsUrl ||
+          process.env.NEXT_PUBLIC_WS_HOST ||
+          (typeof window !== "undefined" && window.location.host);
+
+        if (host) {
+          const protocol =
+            typeof window !== "undefined" && window.location.protocol === "https:"
+              ? "wss:"
+              : "ws:";
+          const fullWsUrl =
+            wsUrl || `${protocol}//${host}/parties/power-grid/${venueId}`;
+
+          socket = new WebSocket(fullWsUrl);
+          socketRef.current = socket;
+
+          const onOpen = () => {
+            if (isSubscribed && isMountedRef.current) {
+              setWsConnected(true);
+            }
+          };
+
+          const onMessage = (event: MessageEvent) => {
+            if (!isSubscribed || !isMountedRef.current) return;
+            try {
+              const data = JSON.parse(event.data);
+              if (data?.type === "POWER_GRID_UPDATE" && data.summary) {
+                setSummary(data.summary);
+              } else if (data?.overallGridHealthScore !== undefined) {
+                setSummary(data as VenuePowerGridSummary);
+              }
+            } catch {
+              // Ignore malformed WS packets
+            }
+          };
+
+          const onClose = () => {
+            if (isSubscribed && isMountedRef.current) {
+              setWsConnected(false);
+            }
+          };
+
+          const onError = () => {
+            if (isSubscribed && isMountedRef.current) {
+              setWsConnected(false);
+            }
+          };
+
+          socket.addEventListener("open", onOpen);
+          socket.addEventListener("message", onMessage);
+          socket.addEventListener("close", onClose);
+          socket.addEventListener("error", onError);
+        }
+      } catch {
+        // Gracefully handle socket init failure
+      }
+    }
+
+    // Explicit cleanup to prevent memory leaks on unmount
+    return () => {
+      isSubscribed = false;
+      window.removeEventListener("worksphere:power-grid-telemetry", handleCustomEvent);
+
+      if (socket) {
+        try {
+          if (
+            socket.readyState === WebSocket.OPEN ||
+            socket.readyState === WebSocket.CONNECTING
+          ) {
+            socket.close();
+          }
+        } catch {
+          // Socket already closed
+        }
+        socketRef.current = null;
+      }
+    };
+  }, [venueId, wsUrl, enableLiveUpdates]);
 
   const handleReportDeadPlug = async (node: DeskPowerNode, issueType: string) => {
     setSubmittingReport(true);
@@ -69,15 +214,24 @@ export default function PowerGridReliabilityMonitor({
         }),
       });
       const data = await res.json();
-      if (data.success) {
+      if (data.success && isMountedRef.current) {
         setReportingNode(null);
         setReportSuccessMsg(`Issue logged for ${node.seatNumber}. Facility ops notified!`);
-        setTimeout(() => setReportSuccessMsg(null), 4000);
+        if (successTimeoutRef.current) {
+          clearTimeout(successTimeoutRef.current);
+        }
+        successTimeoutRef.current = setTimeout(() => {
+          if (isMountedRef.current) {
+            setReportSuccessMsg(null);
+          }
+        }, 4000);
       }
     } catch (err) {
       console.error("Report error:", err);
     } finally {
-      setSubmittingReport(false);
+      if (isMountedRef.current) {
+        setSubmittingReport(false);
+      }
     }
   };
 
@@ -111,8 +265,24 @@ export default function PowerGridReliabilityMonitor({
       <div className="relative overflow-hidden rounded-3xl bg-gradient-to-br from-slate-900 via-amber-950/30 to-slate-900 border border-amber-500/30 p-6 md:p-8 backdrop-blur-xl shadow-2xl">
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
           <div className="space-y-2">
-            <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs font-semibold uppercase tracking-wider">
-              <Zap className="w-3.5 h-3.5" /> Real-Time Power Grid Telemetry
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs font-semibold uppercase tracking-wider">
+                <Zap className="w-3.5 h-3.5" /> Real-Time Power Grid Telemetry
+              </div>
+              <span
+                className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider border ${
+                  wsConnected
+                    ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-400"
+                    : "bg-slate-800/80 border-slate-700 text-slate-400"
+                }`}
+              >
+                <span
+                  className={`w-1.5 h-1.5 rounded-full ${
+                    wsConnected ? "bg-emerald-400 animate-pulse" : "bg-slate-500"
+                  }`}
+                />
+                {wsConnected ? "WebSocket Live" : "Polling Active"}
+              </span>
             </div>
             <h1 className="text-2xl md:text-3xl font-extrabold text-white tracking-tight">
               Smart Power Grid & Outlet Voltage Monitor
