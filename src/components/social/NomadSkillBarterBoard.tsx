@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import {
   Users,
   Sparkles,
@@ -19,11 +19,16 @@ import {
   Send,
   Award,
   Coffee,
+  Search,
+  X,
+  SlidersHorizontal,
+  Filter,
 } from "lucide-react";
-import type {
-  SkillListing,
-  SkillCategory,
-  BarterMatchResult,
+import {
+  calculateBarterHourBalance,
+  type SkillListing,
+  type SkillCategory,
+  type BarterMatchResult,
 } from "@/lib/social/skillBarterEngine";
 
 interface NomadSkillBarterBoardProps {
@@ -38,9 +43,16 @@ export default function NomadSkillBarterBoard({
   const [listings, setListings] = useState<SkillListing[]>([]);
   const [matches, setMatches] = useState<BarterMatchResult[]>([]);
   const [selectedCategory, setSelectedCategory] = useState<string>("ALL");
+  const [searchQuery, setSearchQuery] = useState<string>("");
+  const [searchScope, setSearchScope] = useState<"ALL" | "OFFERING" | "SEEKING">("ALL");
   const [loading, setLoading] = useState(true);
   const [showPostModal, setShowPostModal] = useState(false);
   const [matchSuccessMsg, setMatchSuccessMsg] = useState<string | null>(null);
+
+  // TimeBank Barter Hours
+  const [earnedMinutes, setEarnedMinutes] = useState(120);
+  const [spentMinutes, setSpentMinutes] = useState(45);
+  const hourBalance = calculateBarterHourBalance(earnedMinutes, spentMinutes);
 
   // Form states
   const [offeringSkill, setOfferingSkill] = useState("");
@@ -50,6 +62,7 @@ export default function NomadSkillBarterBoard({
   const [duration, setDuration] = useState<15 | 30 | 45>(30);
   const [meetupSpot, setMeetupSpot] = useState("Lounge Coffee Table");
   const [posting, setPosting] = useState(false);
+
 
   const fetchListings = async () => {
     setLoading(true);
@@ -70,6 +83,36 @@ export default function NomadSkillBarterBoard({
   useEffect(() => {
     fetchListings();
   }, [selectedCategory, venueId]);
+
+  const filteredListings = useMemo(() => {
+    if (!searchQuery.trim()) return listings;
+    const q = searchQuery.toLowerCase().trim();
+
+    return listings.filter((item) => {
+      if (searchScope === "OFFERING") {
+        return (
+          item.offeringSkill.toLowerCase().includes(q) ||
+          item.offeringCategory.toLowerCase().includes(q)
+        );
+      }
+      if (searchScope === "SEEKING") {
+        return (
+          item.seekingSkill.toLowerCase().includes(q) ||
+          item.seekingCategory.toLowerCase().includes(q)
+        );
+      }
+
+      return (
+        item.offeringSkill.toLowerCase().includes(q) ||
+        item.seekingSkill.toLowerCase().includes(q) ||
+        item.userName.toLowerCase().includes(q) ||
+        (item.userTitle && item.userTitle.toLowerCase().includes(q)) ||
+        item.meetupSpot.toLowerCase().includes(q) ||
+        item.offeringCategory.toLowerCase().includes(q) ||
+        item.seekingCategory.toLowerCase().includes(q)
+      );
+    });
+  }, [listings, searchQuery, searchScope]);
 
   const handleCreateListing = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -119,6 +162,7 @@ export default function NomadSkillBarterBoard({
       });
       const data = await res.json();
       if (data.success) {
+        setSpentMinutes((prev) => prev + (listing.durationMinutes || 15));
         setMatchSuccessMsg(`Barter Proposal sent to ${listing.userName}! Meet at ${listing.meetupSpot}.`);
         setTimeout(() => setMatchSuccessMsg(null), 5000);
       }
@@ -145,14 +189,21 @@ export default function NomadSkillBarterBoard({
     }
   };
 
+  const popularKeywords = ["React", "Figma", "Visa", "Cold Email", "Tax", "Next.js", "Design System"];
+
   return (
     <div className="w-full max-w-5xl mx-auto space-y-6">
       {/* Header Banner */}
       <div className="relative overflow-hidden rounded-3xl bg-gradient-to-br from-slate-900 via-indigo-950 to-slate-900 border border-indigo-500/30 p-6 md:p-8 backdrop-blur-xl shadow-2xl">
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
           <div className="space-y-2">
-            <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-cyan-500/10 border border-cyan-500/30 text-cyan-300 text-xs font-semibold uppercase tracking-wider">
-              <ArrowRightLeft className="w-3.5 h-3.5" /> Peer Knowledge Exchange
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-cyan-500/10 border border-cyan-500/30 text-cyan-300 text-xs font-semibold uppercase tracking-wider">
+                <ArrowRightLeft className="w-3.5 h-3.5" /> Peer Knowledge Exchange
+              </div>
+              <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-xs font-mono font-bold">
+                <Clock className="w-3.5 h-3.5" /> {hourBalance.netBalanceHours.toFixed(1)}h Credit Balance
+              </div>
             </div>
             <h1 className="text-2xl md:text-3xl font-extrabold text-white tracking-tight">
               On-Site Nomad Skill Barter Board
@@ -208,6 +259,82 @@ export default function NomadSkillBarterBoard({
         </div>
       )}
 
+      {/* Search & Filter Bar */}
+      <div className="p-4 rounded-3xl bg-slate-900/80 border border-slate-800 backdrop-blur-md space-y-3 shadow-lg">
+        <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
+          {/* Search Input Box */}
+          <div className="relative flex-1">
+            <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Search skills, topics, visas, or coworkers (e.g. React, Figma, Tax, Alex)..."
+              className="w-full bg-slate-950/90 border border-slate-700/80 hover:border-slate-600 focus:border-cyan-500 rounded-2xl pl-10 pr-10 py-2.5 text-xs text-white placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/20 transition shadow-inner"
+            />
+            {searchQuery && (
+              <button
+                onClick={() => setSearchQuery("")}
+                aria-label="Clear search"
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white p-1 rounded-full hover:bg-slate-800 transition"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
+
+          {/* Scope Filters */}
+          <div className="flex items-center gap-1 bg-slate-950/80 p-1 rounded-2xl border border-slate-800 shrink-0">
+            {(
+              [
+                { id: "ALL", label: "All" },
+                { id: "OFFERING", label: "Offering" },
+                { id: "SEEKING", label: "Seeking" },
+              ] as const
+            ).map((scope) => (
+              <button
+                key={scope.id}
+                onClick={() => setSearchScope(scope.id)}
+                className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition ${
+                  searchScope === scope.id
+                    ? "bg-cyan-600 text-white shadow-sm"
+                    : "text-slate-400 hover:text-slate-200"
+                }`}
+              >
+                {scope.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Popular Keyword Chips & Result Count */}
+        <div className="flex flex-wrap items-center justify-between gap-2 pt-1 border-t border-slate-800/60 text-xs">
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className="text-[11px] text-slate-500 flex items-center gap-1 mr-1">
+              <Filter className="w-3 h-3 text-cyan-400" /> Popular:
+            </span>
+            {popularKeywords.map((kw) => (
+              <button
+                key={kw}
+                onClick={() => setSearchQuery(kw)}
+                className={`px-2.5 py-0.5 rounded-lg text-[11px] font-medium border transition ${
+                  searchQuery.toLowerCase() === kw.toLowerCase()
+                    ? "bg-cyan-500/20 border-cyan-500/40 text-cyan-300"
+                    : "bg-slate-950/60 border-slate-800 text-slate-400 hover:text-slate-200 hover:border-slate-700"
+                }`}
+              >
+                {kw}
+              </button>
+            ))}
+          </div>
+
+          <div className="text-[11px] text-slate-400 font-mono">
+            Showing <strong className="text-white">{filteredListings.length}</strong> of{" "}
+            <strong className="text-slate-300">{listings.length}</strong> barters
+          </div>
+        </div>
+      </div>
+
       {/* Category Filter Pills */}
       <div className="flex items-center gap-2 overflow-x-auto pb-1 text-xs">
         {[
@@ -239,15 +366,34 @@ export default function NomadSkillBarterBoard({
           <RefreshCw className="w-6 h-6 animate-spin text-cyan-400" />
           <p className="text-sm">Finding skill barter offerings from coworkers on-site...</p>
         </div>
-      ) : listings.length === 0 ? (
-        <div className="p-12 rounded-3xl bg-slate-900/40 border border-slate-800 text-center space-y-2 text-slate-400 text-xs">
+      ) : filteredListings.length === 0 ? (
+        <div className="p-12 rounded-3xl bg-slate-900/40 border border-slate-800 text-center space-y-3 text-slate-400 text-xs">
           <Coffee className="w-8 h-8 mx-auto text-slate-600" />
-          <p className="text-sm font-semibold text-slate-300">No active barter requests in this category</p>
-          <p>Be the first to post a 15-minute knowledge trade in this workspace!</p>
+          <p className="text-sm font-semibold text-slate-300">
+            {searchQuery
+              ? `No skills found matching "${searchQuery}"`
+              : "No active barter requests in this category"}
+          </p>
+          <p>
+            {searchQuery
+              ? "Try adjusting your search terms or clearing filters."
+              : "Be the first to post a 15-minute knowledge trade in this workspace!"}
+          </p>
+          {searchQuery && (
+            <button
+              onClick={() => {
+                setSearchQuery("");
+                setSelectedCategory("ALL");
+              }}
+              className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-cyan-300 text-xs font-semibold transition"
+            >
+              Clear Search & Reset Filters
+            </button>
+          )}
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-          {listings.map((item) => (
+          {filteredListings.map((item) => (
             <div
               key={item.id}
               className="p-5 rounded-3xl bg-slate-900/80 border border-slate-800 hover:border-cyan-500/40 transition-all duration-200 backdrop-blur-md space-y-4 shadow-lg flex flex-col justify-between"
