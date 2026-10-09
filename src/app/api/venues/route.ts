@@ -442,30 +442,70 @@ export async function GET(req: NextRequest) {
 
       // Build fallback query without the strict text query condition
       const fallbackWhere = { ...where };
-      if (fallbackWhere.AND) {
-        fallbackWhere.AND = fallbackWhere.AND.filter(
-          (cond: any) => !cond.OR || cond.OR !== where.OR,
-        );
-        if (fallbackWhere.AND.length === 0) delete fallbackWhere.AND;
-      } else {
-        delete fallbackWhere.OR;
+      if (fallbackWhere.AND && Array.isArray(fallbackWhere.AND)) {
+        fallbackWhere.AND = fallbackWhere.AND.filter((cond: any) => {
+          if (!cond.OR || !Array.isArray(cond.OR)) return true;
+          const matchesQuery = cond.OR.some(
+            (c: any) =>
+              c.name?.contains === querySearch ||
+              c.address?.contains === querySearch,
+          );
+          return !matchesQuery;
+        });
+        if (fallbackWhere.AND.length === 1 && fallbackWhere.AND[0].OR) {
+          fallbackWhere.OR = fallbackWhere.AND[0].OR;
+          delete fallbackWhere.AND;
+        } else if (fallbackWhere.AND.length === 0) {
+          delete fallbackWhere.AND;
+        }
+      } else if (fallbackWhere.OR) {
+        const isQueryOnly =
+          Array.isArray(fallbackWhere.OR) &&
+          fallbackWhere.OR.some(
+            (c: any) =>
+              c.name?.contains === querySearch ||
+              c.address?.contains === querySearch,
+          );
+        if (isQueryOnly) {
+          delete fallbackWhere.OR;
+        }
       }
 
       const allCandidates = await prisma.venue.findMany({
         where: fallbackWhere,
-        include: {
-          _count: {
-            select: { favorites: true, ratings: true },
-          },
-          foodValidations: true,
+        select: {
+          id: true,
+          name: true,
+          address: true,
+          description: true,
         },
         take: 500,
       });
 
       const matchedFuzzy = fuzzyFilterVenues(allCandidates, querySearch);
       if (matchedFuzzy.length > 0) {
-        venues = matchedFuzzy.slice(skip, skip + limit);
         total = matchedFuzzy.length;
+        const pageItems = matchedFuzzy.slice(skip, skip + limit);
+        const pageIds = pageItems.map((v) => v.id);
+
+        if (pageIds.length > 0) {
+          const detailedVenues = await prisma.venue.findMany({
+            where: { id: { in: pageIds } },
+            include: {
+              _count: {
+                select: { favorites: true, ratings: true },
+              },
+              foodValidations: true,
+            },
+          });
+
+          const venueMap = new Map(detailedVenues.map((v) => [v.id, v]));
+          venues = pageIds
+            .map((id) => venueMap.get(id))
+            .filter(Boolean) as typeof detailedVenues;
+        } else {
+          venues = [];
+        }
       }
     }
 
