@@ -98,6 +98,11 @@ function getSpeedMetersPerMinute(mode?: string): number {
   }
 }
 
+export interface MeetHalfwayOptions {
+  minRequiredSeats?: number;
+  transitPreference?: 'transit' | 'walking' | 'balanced';
+}
+
 export class MeetHalfwayOptimizer {
   /**
    * Computes the Geometric Median (L1 Fermat-Weber center) using Weiszfeld's algorithm.
@@ -151,13 +156,21 @@ export class MeetHalfwayOptimizer {
   }
 
   /**
-   * Ranks candidate venues based on commute time, fairness (standard deviation), seat capacity, and amenities.
+   * Ranks candidate venues based on commute time, fairness (standard deviation), seat capacity, transit mode preference, and amenities.
    */
   public static rankVenuesForTeam(
     members: TeamMemberLocation[],
     venues: CandidateVenue[],
-    minRequiredSeats: number = members.length
+    minRequiredSeatsOrOptions?: number | MeetHalfwayOptions
   ): OptimizationResult {
+    const options: MeetHalfwayOptions =
+      typeof minRequiredSeatsOrOptions === 'number'
+        ? { minRequiredSeats: minRequiredSeatsOrOptions, transitPreference: 'balanced' }
+        : minRequiredSeatsOrOptions ?? { minRequiredSeats: members.length, transitPreference: 'balanced' };
+
+    const minRequiredSeats = options.minRequiredSeats ?? members.length;
+    const transitPreference = options.transitPreference ?? 'balanced';
+
     const centroid = this.computeGeometricMedian(members);
     const rankedRecommendations: RankedVenueRecommendation[] = [];
 
@@ -192,7 +205,18 @@ export class MeetHalfwayOptimizer {
           venue.latitude,
           venue.longitude
         );
-        const speed = getSpeedMetersPerMinute(member.transitMode);
+
+        // Resolve transit mode with preference consideration
+        let effectiveMode = member.transitMode || 'transit';
+        if (transitPreference === 'walking') {
+          // If walking preferred and distance is reasonable (< 3.5km), evaluate as walking
+          effectiveMode = distanceMeters <= 3500 ? 'walking' : (member.transitMode || 'transit');
+        } else if (transitPreference === 'transit' && effectiveMode === 'walking' && distanceMeters > 1200) {
+          // If public transit preferred and walk exceeds 1.2km, promote to public transit
+          effectiveMode = 'transit';
+        }
+
+        const speed = getSpeedMetersPerMinute(effectiveMode);
         const durationMinutes = Math.round((distanceMeters / speed) * 1.2 + 2); // 20% routing overhead + 2 min buffer
 
         return {
@@ -200,14 +224,16 @@ export class MeetHalfwayOptimizer {
           memberName: member.name,
           distanceMeters: Math.round(distanceMeters),
           durationMinutes: Math.max(1, durationMinutes),
-          transitMode: member.transitMode || 'transit',
+          transitMode: effectiveMode,
         };
       });
 
       const durations = memberEstimates.map((e) => e.durationMinutes);
+      const distances = memberEstimates.map((e) => e.distanceMeters);
       const totalDuration = durations.reduce((sum, d) => sum + d, 0);
       const avgDuration = totalDuration / durations.length;
       const maxDuration = Math.max(...durations);
+      const maxDistance = Math.max(...distances);
 
       // Calculate variance and standard deviation for fairness scoring
       const variance =
@@ -223,11 +249,40 @@ export class MeetHalfwayOptimizer {
       const wifiBonus = Math.min(15, ((venue.wifiSpeed ?? 50) / 100) * 15); // up to 15 pts
       const outletBonus = venue.hasOutlets ? 5 : 0;
 
+      // Transit Mode Specific Scoring Bonuses
+      let transitPreferenceBonus = 0;
+      if (transitPreference === 'walking') {
+        // High reward for venues where all team members can walk (< 1.5km)
+        if (maxDistance <= 1500) {
+          transitPreferenceBonus = 20;
+        } else if (maxDistance <= 2500) {
+          transitPreferenceBonus = 10;
+        } else {
+          // Penalty if forced to walk excessive distance
+          transitPreferenceBonus = -15;
+        }
+      } else if (transitPreference === 'transit') {
+        // Reward venues with fast average public transit commutes (< 25 min)
+        if (avgDuration <= 20) {
+          transitPreferenceBonus = 15;
+        } else if (avgDuration <= 30) {
+          transitPreferenceBonus = 8;
+        }
+      }
+
       // Lower aggregate travel time and higher fairness yield higher score
       const travelPenalty = avgDuration * 1.5;
       const compositeRankScore = Math.max(
         0,
-        Math.round(100 - travelPenalty + (fairnessScore * 0.4) + ratingBonus + wifiBonus + outletBonus)
+        Math.round(
+          100 -
+            travelPenalty +
+            fairnessScore * 0.4 +
+            ratingBonus +
+            wifiBonus +
+            outletBonus +
+            transitPreferenceBonus
+        )
       );
 
       rankedRecommendations.push({
