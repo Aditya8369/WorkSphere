@@ -136,82 +136,43 @@ const INITIAL_MEMBERS: MemberWorkspaceSession[] = [
 ];
 
 /**
- * Boundary-safe tooltip component that dynamically adjusts alignment (left, right, or center)
- * to prevent viewport and container clipping on mobile devices and edge grid columns.
- */
-interface BoundarySafeTooltipProps {
-  content: string | React.ReactNode;
-  align?: "left" | "right" | "center" | "auto";
-  children: React.ReactNode;
-  className?: string;
-}
-
-function BoundarySafeTooltip({
-  content,
-  align = "auto",
-  children,
-  className = "",
-}: BoundarySafeTooltipProps) {
-  const getAlignmentClasses = () => {
-    switch (align) {
-      case "left":
-        return "left-0 translate-x-0";
-      case "right":
-        return "right-0 translate-x-0";
-      case "center":
-        return "left-1/2 -translate-x-1/2";
-      case "auto":
-      default:
-        return "left-1/2 -translate-x-1/2 sm:left-auto sm:right-0 sm:translate-x-0";
-    }
-  };
-
-  return (
-    <div className={`group relative inline-flex items-center ${className}`}>
-      {children}
-      <div
-        className={`absolute bottom-full mb-2 hidden group-hover:flex group-focus-within:flex flex-col z-50 pointer-events-none w-max max-w-[240px] sm:max-w-xs p-2.5 rounded-xl bg-slate-950/95 border border-slate-700/80 text-[11px] text-slate-200 shadow-2xl backdrop-blur-md transition-all duration-150 animate-fadeIn break-words ${getAlignmentClasses()}`}
-        role="tooltip"
-      >
-        {content}
-        <div className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-slate-800" />
-      </div>
-    </div>
-  );
-}
-
-/**
  * Props for the {@link AutonomousConciergeDashboard} component.
  */
 export interface AutonomousConciergeDashboardProps {
   /**
    * Initial environmental telemetry sensor feeds across workspace zones.
+   * If not provided, default mock sensors (Terrace, Atrium, Quiet Library, Biophilic Bay) are used.
    */
   initialSensors?: EnvironmentalSensorFeed[];
 
   /**
    * Initial workspace member sessions and preferences.
+   * If not provided, default active member sessions are used.
    */
   initialMembers?: MemberWorkspaceSession[];
 
   /**
    * Default state for the global autonomous re-balancing auto-pilot.
+   * When true, high-priority migrations are auto-applied without manual confirmation.
    * @default true
    */
   defaultAutoPilot?: boolean;
 
   /**
    * Callback invoked whenever a desk migration recommendation is confirmed or auto-applied.
+   * @param recommendation The rebalancing recommendation that was applied.
    */
   onMigrationApplied?: (recommendation: RebalanceRecommendation) => void;
 
   /**
    * Callback invoked when the user toggles the global Auto-Pilot switch.
+   * @param enabled True if auto-pilot was enabled, false if prompt-only mode.
    */
   onAutoPilotToggle?: (enabled: boolean) => void;
 
   /**
    * Callback invoked when an environmental event simulation is triggered.
+   * @param scenario The injected event type ('rain' | 'noise' | 'hvac_reset').
    */
   onScenarioTriggered?: (scenario: "rain" | "noise" | "hvac_reset") => void;
 
@@ -223,6 +184,10 @@ export interface AutonomousConciergeDashboardProps {
 
 /**
  * Autonomous AI Concierge & Weather/Noise Re-Balancing Dashboard.
+ *
+ * Renders real-time zone micro-climate telemetry, computes dynamic comfort scores,
+ * detects sudden weather storms and acoustic spikes, and provides automated or one-click
+ * desk migration proposals to maintain optimal focus equilibrium.
  */
 export default function AutonomousConciergeDashboard({
   initialSensors = INITIAL_SENSORS,
@@ -311,8 +276,9 @@ export default function AutonomousConciergeDashboard({
         </div>
 
         <div className="flex items-center gap-3">
-          <BoundarySafeTooltip
-            content={
+          <button
+            onClick={handleToggleAutoPilot}
+            className={`px-4 py-2 rounded-xl text-xs font-bold border transition-all flex items-center gap-2 ${
               autoPilotGlobal
                 ? "Auto-Pilot: High-priority migrations (rain, noise spikes) are automatically confirmed."
                 : "Prompt Mode: You will receive one-click notification prompts before desk migration."
