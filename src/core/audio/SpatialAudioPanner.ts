@@ -1,4 +1,4 @@
-﻿/**
+/**
  * SpatialAudioPanner.ts
  * Manages the Web Audio API PannerNodes and GainNodes, calculating 3D coordinates and distance attenuation 
  * based on desk layouts. Sanitizes and clamps gain coefficients to [0.0, 1.0] to prevent audio clipping (#5597).
@@ -18,6 +18,9 @@ export class SpatialAudioPanner {
     private listener: AudioListener;
     private listenerPosition: { x: number; y: number; z: number };
 
+    private masterGainNode: GainNode;
+    private isMuted: boolean = false;
+
     public readonly refDistance = 1;
     public readonly maxDistance = 100;
     public readonly rolloffFactor = 1;
@@ -28,12 +31,42 @@ export class SpatialAudioPanner {
         this.listener = audioContext.listener;
         this.listenerPosition = { x: 0, y: 0, z: 0 };
 
+        // Initialize master listener GainNode routed to destination
+        this.masterGainNode = audioContext.createGain();
+        this.masterGainNode.gain.setValueAtTime(1.0, audioContext.currentTime);
+        this.masterGainNode.connect(audioContext.destination);
+
         // Set default listener position (center of room)
         if (this.listener.positionX) {
             this.listener.positionX.value = 0;
             this.listener.positionY.value = 0;
             this.listener.positionZ.value = 0;
         }
+    }
+
+    /**
+     * Toggles mute state of master audio listener GainNode between 0.0 and 1.0.
+     * Silences all incoming peer audio streams without destroying peer audio pipelines.
+     */
+    public toggleMuteAll(): boolean {
+        this.isMuted = !this.isMuted;
+        const targetGain = this.isMuted ? 0.0 : 1.0;
+        this.masterGainNode.gain.setValueAtTime(targetGain, this.audioContext.currentTime);
+        return this.isMuted;
+    }
+
+    public setMasterGain(gain: number): void {
+        const clamped = Math.max(0.0, Math.min(1.0, gain));
+        this.isMuted = clamped === 0.0;
+        this.masterGainNode.gain.setValueAtTime(clamped, this.audioContext.currentTime);
+    }
+
+    public getMasterGain(): number {
+        return this.masterGainNode.gain.value;
+    }
+
+    public getIsMuted(): boolean {
+        return this.isMuted;
     }
 
     /**
@@ -93,7 +126,7 @@ export class SpatialAudioPanner {
         const source = this.audioContext.createMediaStreamSource(stream);
         source.connect(panner);
         panner.connect(gainNode);
-        gainNode.connect(this.audioContext.destination);
+        gainNode.connect(this.masterGainNode);
 
         this.peers.set(peerId, {
             id: peerId,
@@ -166,5 +199,10 @@ export class SpatialAudioPanner {
             peer.gainNode?.disconnect();
         }
         this.peers.clear();
+        try {
+            this.masterGainNode.disconnect();
+        } catch {
+            // Ignore disconnect error
+        }
     }
 }
