@@ -21,6 +21,60 @@ export interface SpatialUpdate {
   timestamp: number;
 }
 
+export type AudioQualityTier = 'high' | 'medium' | 'low';
+
+export interface AudioQualityConfig {
+  tier: AudioQualityTier;
+  bitrateBps: number;
+  sampleRate: number;
+  complexity: number;
+  enableDtx: boolean;
+  enableFec: boolean;
+}
+
+export const AUDIO_QUALITY_PROFILES: Record<AudioQualityTier, AudioQualityConfig> = {
+  high: {
+    tier: 'high',
+    bitrateBps: 48000,
+    sampleRate: 48000,
+    complexity: 10,
+    enableDtx: false,
+    enableFec: true,
+  },
+  medium: {
+    tier: 'medium',
+    bitrateBps: 32000,
+    sampleRate: 48000,
+    complexity: 6,
+    enableDtx: true,
+    enableFec: true,
+  },
+  low: {
+    tier: 'low',
+    bitrateBps: 16000,
+    sampleRate: 24000,
+    complexity: 3,
+    enableDtx: true,
+    enableFec: true,
+  },
+};
+
+/**
+ * Computes the optimal audio quality configuration based on round-trip latency (RTT) in ms.
+ * - RTT < 80ms: High (48 kbps, max complexity)
+ * - 80ms <= RTT <= 200ms: Medium (32 kbps, DTX enabled)
+ * - RTT > 200ms: Low (16 kbps, narrowband, high compression)
+ */
+export function determineAudioQuality(rttMs: number, packetLossPercent: number = 0): AudioQualityConfig {
+  if (rttMs > 200 || packetLossPercent > 10) {
+    return AUDIO_QUALITY_PROFILES.low;
+  }
+  if (rttMs > 80 || packetLossPercent > 3) {
+    return AUDIO_QUALITY_PROFILES.medium;
+  }
+  return AUDIO_QUALITY_PROFILES.high;
+}
+
 export interface PeerAudioState {
   peerId: string;
   position: SpatialVector;
@@ -28,6 +82,9 @@ export interface PeerAudioState {
   lastTimestamp: number;
   packetsReceived: number;
   packetsLost: number;
+  rttMs: number;
+  qualityTier: AudioQualityTier;
+  bitrateBps: number;
 }
 
 /**
@@ -56,6 +113,9 @@ export default class SpatialVoiceRoom implements Party.Server {
       lastTimestamp: Date.now(),
       packetsReceived: 0,
       packetsLost: 0,
+      rttMs: 0,
+      qualityTier: 'high',
+      bitrateBps: AUDIO_QUALITY_PROFILES.high.bitrateBps,
     });
 
     // Send initial state of all users to the newly connected peer
@@ -64,6 +124,7 @@ export default class SpatialVoiceRoom implements Party.Server {
       JSON.stringify({
         type: "INITIAL_STATE",
         peers: initialState,
+        qualityProfile: AUDIO_QUALITY_PROFILES.high,
       })
     );
 
@@ -159,6 +220,67 @@ export default class SpatialVoiceRoom implements Party.Server {
           }),
           [sender.id]
         );
+      } else if (parsed.type === "PING" || parsed.type === "ping" || parsed.type === "LATENCY_PROBE") {
+        const clientTimestamp = parsed.timestamp ?? parsed.clientTimestamp ?? Date.now();
+        const serverTimestamp = Date.now();
+        const reportedRtt = parsed.rttMs ?? parsed.rtt ?? (serverTimestamp - clientTimestamp);
+        const rttMs = Math.max(0, reportedRtt);
+
+        const peer = this.peers.get(sender.id);
+        const packetLoss = peer && peer.packetsReceived > 0
+          ? (peer.packetsLost / (peer.packetsReceived + peer.packetsLost)) * 100
+          : 0;
+
+        const adaptedConfig = determineAudioQuality(rttMs, packetLoss);
+
+        if (peer) {
+          peer.rttMs = rttMs;
+          if (peer.qualityTier !== adaptedConfig.tier) {
+            peer.qualityTier = adaptedConfig.tier;
+            peer.bitrateBps = adaptedConfig.bitrateBps;
+
+            // Notify client to dynamically adapt audio quality
+            sender.send(
+              JSON.stringify({
+                type: "QUALITY_ADAPTATION",
+                rttMs,
+                quality: adaptedConfig,
+              })
+            );
+          }
+        }
+
+        sender.send(
+          JSON.stringify({
+            type: "PONG",
+            clientTimestamp,
+            serverTimestamp,
+            rttMs,
+            qualityTier: adaptedConfig.tier,
+            bitrateBps: adaptedConfig.bitrateBps,
+          })
+        );
+      } else if (parsed.type === "RTT_REPORT" || parsed.type === "STATS_UPDATE") {
+        const rttMs = Math.max(0, parsed.rttMs ?? parsed.rtt ?? 0);
+        const packetLoss = parsed.packetLoss ?? 0;
+        const adaptedConfig = determineAudioQuality(rttMs, packetLoss);
+
+        const peer = this.peers.get(sender.id);
+        if (peer) {
+          peer.rttMs = rttMs;
+          if (peer.qualityTier !== adaptedConfig.tier) {
+            peer.qualityTier = adaptedConfig.tier;
+            peer.bitrateBps = adaptedConfig.bitrateBps;
+
+            sender.send(
+              JSON.stringify({
+                type: "QUALITY_ADAPTATION",
+                rttMs,
+                quality: adaptedConfig,
+              })
+            );
+          }
+        }
       }
     } catch (error) {
       console.error("Error processing spatial voice message:", error);
