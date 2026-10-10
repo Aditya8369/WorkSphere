@@ -23,6 +23,7 @@ import {
 } from "@/lib/venueFilterPresets";
 import { sanitizeCapacityInput } from "@/lib/filters";
 import { DistanceFilterSlider } from "./DistanceFilterSlider";
+import { HybridSearchWeightSlider } from "./HybridSearchWeightSlider";
 
 export interface VenueSearchDrawerProps {
   isOpen: boolean;
@@ -45,6 +46,14 @@ export interface VenueSearchDrawerProps {
   onCapacityChange?: (capacity: number) => void;
   sortBy?: string;
   onSortByChange?: (sortBy: string) => void;
+  semanticWeight?: number;
+  onSemanticWeightChange?: (weight: number) => void;
+  fullTextWeight?: number;
+  onFullTextWeightChange?: (weight: number) => void;
+  onSearchWeightsChange?: (weights: {
+    semanticWeight: number;
+    fullTextWeight: number;
+  }) => void;
   onClearFilters?: () => void;
   onApplyFilters?: () => void;
 }
@@ -145,6 +154,11 @@ export function VenueSearchDrawer({
   onCapacityChange,
   sortBy: externalSortBy,
   onSortByChange,
+  semanticWeight: externalSemanticWeight,
+  onSemanticWeightChange,
+  fullTextWeight: externalFullTextWeight,
+  onFullTextWeightChange,
+  onSearchWeightsChange,
   onClearFilters,
   onApplyFilters,
 }: VenueSearchDrawerProps) {
@@ -159,6 +173,8 @@ export function VenueSearchDrawer({
     undefined,
   );
   const [internalSortBy, setInternalSortBy] = useState("default");
+  const [internalSemanticWeight, setInternalSemanticWeight] = useState(0.5);
+  const [internalFullTextWeight, setInternalFullTextWeight] = useState(0.5);
 
   // Preset management state
   const [presets, setPresets] = useState<FilterPreset[]>([]);
@@ -196,6 +212,8 @@ export function VenueSearchDrawer({
     externalCapacity ??
     internalCapacity;
   const currentSortBy = externalSortBy ?? internalSortBy;
+  const semanticWeight = externalSemanticWeight ?? internalSemanticWeight;
+  const fullTextWeight = externalFullTextWeight ?? internalFullTextWeight;
 
   const hasActiveFilters =
     amenities.length > 0 ||
@@ -204,7 +222,9 @@ export function VenueSearchDrawer({
     cat !== "all" ||
     distance > 0 ||
     (capacity !== undefined && capacity > 1) ||
-    currentSortBy !== "default";
+    currentSortBy !== "default" ||
+    semanticWeight !== 0.5 ||
+    fullTextWeight !== 0.5;
   const activeFilterCount =
     amenities.length +
     (noise !== "all" ? 1 : 0) +
@@ -212,7 +232,8 @@ export function VenueSearchDrawer({
     (cat !== "all" ? 1 : 0) +
     (distance > 0 ? 1 : 0) +
     (capacity !== undefined && capacity > 1 ? 1 : 0) +
-    (currentSortBy !== "default" ? 1 : 0);
+    (currentSortBy !== "default" ? 1 : 0) +
+    (semanticWeight !== 0.5 || fullTextWeight !== 0.5 ? 1 : 0);
 
   const handleSearchInput = (val: string) => {
     setActivePresetId(null);
@@ -271,6 +292,26 @@ export function VenueSearchDrawer({
     setActivePresetId(null);
     if (onSortByChange) onSortByChange(val);
     else setInternalSortBy(val);
+  };
+
+  const handleSearchWeightsChange = (weights: {
+    semanticWeight: number;
+    fullTextWeight: number;
+  }) => {
+    setActivePresetId(null);
+    if (onSearchWeightsChange) {
+      onSearchWeightsChange(weights);
+    }
+    if (onSemanticWeightChange) {
+      onSemanticWeightChange(weights.semanticWeight);
+    } else {
+      setInternalSemanticWeight(weights.semanticWeight);
+    }
+    if (onFullTextWeightChange) {
+      onFullTextWeightChange(weights.fullTextWeight);
+    } else {
+      setInternalFullTextWeight(weights.fullTextWeight);
+    }
   };
 
   const handleApplyPreset = (preset: FilterPreset) => {
@@ -372,6 +413,16 @@ export function VenueSearchDrawer({
 
     if (onSortByChange) onSortByChange("default");
     setInternalSortBy("default");
+
+    if (onSemanticWeightChange) onSemanticWeightChange(0.5);
+    setInternalSemanticWeight(0.5);
+
+    if (onFullTextWeightChange) onFullTextWeightChange(0.5);
+    setInternalFullTextWeight(0.5);
+
+    if (onSearchWeightsChange) {
+      onSearchWeightsChange({ semanticWeight: 0.5, fullTextWeight: 0.5 });
+    }
 
     if (onClearFilters) onClearFilters();
   };
@@ -757,6 +808,13 @@ export function VenueSearchDrawer({
           max={50}
           step={1}
           presets={[5, 10, 25, 50]}
+        />
+
+        {/* Hybrid Search Scoring Weights (Semantic vs Full-Text) */}
+        <HybridSearchWeightSlider
+          semanticWeight={semanticWeight}
+          fullTextWeight={fullTextWeight}
+          onChange={handleSearchWeightsChange}
         />
 
         {/* Amenity filter chips (#2177) */}
