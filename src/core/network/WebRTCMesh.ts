@@ -30,6 +30,9 @@ export class WebRTCMesh {
     // Multi-hop routing table: destinationPeerId -> nextHopPeerId
     private routingTable: Map<string, string>;
 
+    // Multi-path opportunistic routes: destinationPeerId -> Set<nextHopPeerId>
+    private multiPathRoutes: Map<string, Set<string>>;
+
     // Intermediate forwarding transfer buffers: peerId -> Map<transferId, PendingTransferBuffer>
     private transferBuffers: Map<string, Map<string, PendingTransferBuffer>>;
 
@@ -43,6 +46,7 @@ export class WebRTCMesh {
         this.onPeerConnectedCallback = null;
         this.onPeerDisconnectedCallback = null;
         this.routingTable = new Map();
+        this.multiPathRoutes = new Map();
         this.transferBuffers = new Map();
         this.chunkReassemblyMaps = new Map();
     }
@@ -183,6 +187,15 @@ export class WebRTCMesh {
             }
         }
 
+        // Teardown multi-path opportunistic routes associated with disconnected peer
+        this.multiPathRoutes.delete(peerId);
+        for (const [dest, nextHops] of this.multiPathRoutes.entries()) {
+            nextHops.delete(peerId);
+            if (nextHops.size === 0) {
+                this.multiPathRoutes.delete(dest);
+            }
+        }
+
         // Clear intermediate forwarding transfer buffers for disconnected peer
         const peerBuffers = this.transferBuffers.get(peerId);
         if (peerBuffers) {
@@ -214,10 +227,133 @@ export class WebRTCMesh {
     }
 
     /**
-     * Updates the routing table for multi-hop mesh forwarding.
+     * Updates the single-hop/default routing table for multi-hop mesh forwarding.
      */
     public setRoute(destinationPeerId: string, nextHopPeerId: string): void {
         this.routingTable.set(destinationPeerId, nextHopPeerId);
+    }
+
+    /**
+     * Adds a candidate next-hop peer route for multi-path opportunistic routing.
+     */
+    public addMultiPathRoute(destinationPeerId: string, nextHopPeerId: string): void {
+        if (!this.multiPathRoutes.has(destinationPeerId)) {
+            this.multiPathRoutes.set(destinationPeerId, new Set());
+        }
+        this.multiPathRoutes.get(destinationPeerId)!.add(nextHopPeerId);
+    }
+
+    /**
+     * Removes a candidate next-hop route from the multi-path routing table.
+     */
+    public removeMultiPathRoute(destinationPeerId: string, nextHopPeerId: string): void {
+        const nextHops = this.multiPathRoutes.get(destinationPeerId);
+        if (nextHops) {
+            nextHops.delete(nextHopPeerId);
+            if (nextHops.size === 0) {
+                this.multiPathRoutes.delete(destinationPeerId);
+            }
+        }
+    }
+
+    /**
+     * Returns all configured candidate next-hop routes for a given destination.
+     */
+    public getMultiPathRoutes(destinationPeerId: string): string[] {
+        const routes = this.multiPathRoutes.get(destinationPeerId);
+        return routes ? Array.from(routes) : [];
+    }
+
+    /**
+     * Discovers all currently available and active paths (direct and indirect) to the destination.
+     */
+    public getAvailablePaths(destinationPeerId: string): string[] {
+        const candidateHops = new Set<string>();
+
+        // 1. Direct connection check
+        const directPeer = this.peers.get(destinationPeerId);
+        if (directPeer?.dataChannel && directPeer.dataChannel.readyState === 'open') {
+            candidateHops.add(destinationPeerId);
+        }
+
+        // 2. Default static route next hop check
+        const staticNextHop = this.routingTable.get(destinationPeerId);
+        if (staticNextHop) {
+            const hopPeer = this.peers.get(staticNextHop);
+            if (hopPeer?.dataChannel && hopPeer.dataChannel.readyState === 'open') {
+                candidateHops.add(staticNextHop);
+            }
+        }
+
+        // 3. Multi-path opportunistic next hops check
+        const multiHops = this.multiPathRoutes.get(destinationPeerId);
+        if (multiHops) {
+            for (const hopId of multiHops) {
+                const hopPeer = this.peers.get(hopId);
+                if (hopPeer?.dataChannel && hopPeer.dataChannel.readyState === 'open') {
+                    candidateHops.add(hopId);
+                }
+            }
+        }
+
+        return Array.from(candidateHops);
+    }
+
+    /**
+     * Opportunistically selects the optimal path with lowest buffer congestion (lowest bufferedAmount).
+     */
+    public selectOptimalPath(destinationPeerId: string): string | null {
+        const availablePaths = this.getAvailablePaths(destinationPeerId);
+        if (availablePaths.length === 0) {
+            return null;
+        }
+
+        let bestPeerId: string = availablePaths[0];
+        let lowestBuffer = Infinity;
+
+        for (const peerId of availablePaths) {
+            const peer = this.peers.get(peerId);
+            const bufferedAmount = peer?.dataChannel?.bufferedAmount ?? 0;
+
+            if (bufferedAmount < lowestBuffer) {
+                lowestBuffer = bufferedAmount;
+                bestPeerId = peerId;
+            }
+        }
+
+        return bestPeerId;
+    }
+
+    /**
+     * Sends a single chunk payload over the best opportunistic path.
+     */
+    public sendMultiPathChunk(destinationPeerId: string, data: ArrayBuffer): boolean {
+        const optimalNextHop = this.selectOptimalPath(destinationPeerId);
+        if (!optimalNextHop) {
+            return false;
+        }
+
+        this.sendData(optimalNextHop, data);
+        return true;
+    }
+
+    /**
+     * Sends an array of large file chunks across multiple opportunistic paths to balance throughput and prevent bottlenecks.
+     */
+    public sendMultiPathPayload(destinationPeerId: string, chunks: ArrayBuffer[]): { sent: number; failed: number } {
+        let sent = 0;
+        let failed = 0;
+
+        for (const chunk of chunks) {
+            const success = this.sendMultiPathChunk(destinationPeerId, chunk);
+            if (success) {
+                sent++;
+            } else {
+                failed++;
+            }
+        }
+
+        return { sent, failed };
     }
 
     /**
@@ -334,6 +470,7 @@ export class WebRTCMesh {
         }
         this.peers.clear();
         this.routingTable.clear();
+        this.multiPathRoutes.clear();
         this.transferBuffers.clear();
         this.chunkReassemblyMaps.clear();
     }
