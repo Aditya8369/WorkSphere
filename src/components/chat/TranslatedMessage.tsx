@@ -1,6 +1,7 @@
 "use client";
 
-import { Languages, Loader2 } from "lucide-react";
+import { useState } from "react";
+import { Check, Copy, Languages, Loader2 } from "lucide-react";
 import { useMessageTranslation } from "@/hooks/useMessageTranslation";
 
 interface TranslatedMessageProps {
@@ -18,6 +19,31 @@ export function TranslatedMessage({ messageId, text }: TranslatedMessageProps) {
     toggleOriginal,
   } = useMessageTranslation(messageId, text);
 
+  const [copied, setCopied] = useState(false);
+
+  const currentText = translation && !showOriginal ? translation.translatedText : text;
+
+  const handleCopy = async () => {
+    try {
+      if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(currentText);
+      } else {
+        const textarea = document.createElement("textarea");
+        textarea.value = currentText;
+        textarea.style.position = "fixed";
+        textarea.style.opacity = "0";
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand("copy");
+        document.body.removeChild(textarea);
+      }
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch (err) {
+      console.warn("Failed to copy translated text to clipboard:", err);
+    }
+  };
+
   return (
     <div>
       {translation && (
@@ -33,11 +59,32 @@ export function TranslatedMessage({ messageId, text }: TranslatedMessageProps) {
           >
             {showOriginal ? "Show translation" : "Show original"}
           </button>
+          <div className="relative inline-flex items-center">
+            <button
+              type="button"
+              onClick={handleCopy}
+              className="inline-flex items-center gap-1 rounded p-0.5 text-zinc-400 transition-colors hover:text-zinc-600 dark:hover:text-zinc-200"
+              aria-label={copied ? "Copied translated text" : "Copy translated text"}
+              title={copied ? "Copied!" : "Copy"}
+            >
+              {copied ? (
+                <Check className="h-3 w-3 text-emerald-500" aria-hidden="true" />
+              ) : (
+                <Copy className="h-3 w-3" aria-hidden="true" />
+              )}
+            </button>
+            {copied && (
+              <span
+                role="status"
+                className="absolute -top-6 left-1/2 -translate-x-1/2 rounded bg-zinc-800 px-1.5 py-0.5 text-[9px] font-medium text-white shadow-sm dark:bg-zinc-700"
+              >
+                Copied!
+              </span>
+            )}
+          </div>
         </div>
       )}
-      <span className="whitespace-pre-wrap">
-        {translation && !showOriginal ? translation.translatedText : text}
-      </span>
+      <span className="whitespace-pre-wrap">{currentText}</span>
       {error && (
         <p role="alert" className="mt-1 text-xs text-red-500">
           {error}
