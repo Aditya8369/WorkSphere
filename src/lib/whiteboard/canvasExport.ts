@@ -5,8 +5,12 @@ export interface ExportCanvasOptions {
   height?: number;
   filename?: string;
   scale?: number;
+  pixelRatio?: 1 | 2 | 4;
   padding?: number;
+  transparentBackground?: boolean;
 }
+
+export type CanvasExportOptions = ExportCanvasOptions;
 
 /**
  * Escapes characters for XML/SVG text nodes and attributes.
@@ -153,7 +157,7 @@ export async function exportCanvasAsPng(
   );
   const width = options.width ?? bounds.width;
   const height = options.height ?? bounds.height;
-  const scale = options.scale ?? 2;
+  const scale = options.pixelRatio ?? options.scale ?? 2;
   const filename = options.filename ?? `whiteboard-${Date.now()}.png`;
 
   const canvas = document.createElement("canvas");
@@ -319,7 +323,7 @@ export async function exportCanvasToBlob(
     );
     const width = options.width ?? bounds.width;
     const height = options.height ?? bounds.height;
-    const scale = options.scale ?? 2;
+    const scale = options.pixelRatio ?? options.scale ?? 2;
 
     canvas = document.createElement("canvas");
     canvas.width = Math.round(width * scale);

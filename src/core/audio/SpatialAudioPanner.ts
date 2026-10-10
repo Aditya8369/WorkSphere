@@ -22,6 +22,9 @@ export class SpatialAudioPanner {
     private listenerPosition: { x: number; y: number; z: number };
     private distanceModel: DistanceAttenuationCurve;
 
+    private masterGainNode: GainNode;
+    private isMuted: boolean = false;
+
     public readonly refDistance = 1;
     public readonly maxDistance = 100;
     public readonly rolloffFactor = 1;
@@ -33,6 +36,11 @@ export class SpatialAudioPanner {
         this.listenerPosition = { x: 0, y: 0, z: 0 };
         this.distanceModel = initialDistanceModel;
 
+        // Initialize master listener GainNode routed to destination
+        this.masterGainNode = audioContext.createGain();
+        this.masterGainNode.gain.setValueAtTime(1.0, audioContext.currentTime);
+        this.masterGainNode.connect(audioContext.destination);
+
         // Set default listener position (center of room)
         if (this.listener.positionX) {
             this.listener.positionX.value = 0;
@@ -42,42 +50,28 @@ export class SpatialAudioPanner {
     }
 
     /**
-     * Gets the currently active distance attenuation curve.
+     * Toggles mute state of master audio listener GainNode between 0.0 and 1.0.
+     * Silences all incoming peer audio streams without destroying peer audio pipelines.
      */
-    public getDistanceModel(): DistanceAttenuationCurve {
-        return this.distanceModel;
+    public toggleMuteAll(): boolean {
+        this.isMuted = !this.isMuted;
+        const targetGain = this.isMuted ? 0.0 : 1.0;
+        this.masterGainNode.gain.setValueAtTime(targetGain, this.audioContext.currentTime);
+        return this.isMuted;
     }
 
-    /**
-     * Alias for getDistanceModel.
-     */
-    public getAttenuationCurve(): DistanceAttenuationCurve {
-        return this.distanceModel;
+    public setMasterGain(gain: number): void {
+        const clamped = Math.max(0.0, Math.min(1.0, gain));
+        this.isMuted = clamped === 0.0;
+        this.masterGainNode.gain.setValueAtTime(clamped, this.audioContext.currentTime);
     }
 
-    /**
-     * Dynamically updates the distance attenuation curve ('linear' vs 'inverse') across all active panner and gain nodes.
-     */
-    public setDistanceModel(model: DistanceAttenuationCurve): void {
-        this.distanceModel = model;
-
-        // Update all active peers' panner nodes and recalculate gains
-        for (const peer of this.peers.values()) {
-            if (peer.pannerNode) {
-                peer.pannerNode.distanceModel = model;
-            }
-            if (peer.gainNode) {
-                const clampedGain = this.calculateDistanceAttenuation(peer.position, this.listenerPosition, model);
-                peer.gainNode.gain.setValueAtTime(clampedGain, this.audioContext.currentTime);
-            }
-        }
+    public getMasterGain(): number {
+        return this.masterGainNode.gain.value;
     }
 
-    /**
-     * Alias for setDistanceModel.
-     */
-    public setAttenuationCurve(curve: DistanceAttenuationCurve): void {
-        this.setDistanceModel(curve);
+    public getIsMuted(): boolean {
+        return this.isMuted;
     }
 
     /**
@@ -149,7 +143,7 @@ export class SpatialAudioPanner {
         const source = this.audioContext.createMediaStreamSource(stream);
         source.connect(panner);
         panner.connect(gainNode);
-        gainNode.connect(this.audioContext.destination);
+        gainNode.connect(this.masterGainNode);
 
         this.peers.set(peerId, {
             id: peerId,
@@ -222,5 +216,10 @@ export class SpatialAudioPanner {
             peer.gainNode?.disconnect();
         }
         this.peers.clear();
+        try {
+            this.masterGainNode.disconnect();
+        } catch {
+            // Ignore disconnect error
+        }
     }
 }
