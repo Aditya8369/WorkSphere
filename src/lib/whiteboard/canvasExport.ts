@@ -161,7 +161,19 @@ export async function exportCanvasAsPng(
   canvas.height = Math.round(height * scale);
 
   const ctx = canvas.getContext("2d");
-  if (!ctx) return null;
+  if (!ctx) {
+    const errorMsg =
+      "Failed to acquire 2D rendering context from canvas: getContext('2d') returned null";
+    console.error(`[canvasExport] ${errorMsg}`);
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(
+        new CustomEvent("whiteboard:export-error", {
+          detail: { message: errorMsg },
+        }),
+      );
+    }
+    return null;
+  }
 
   ctx.scale(scale, scale);
   // Maintain true transparent canvas alpha without dark background fill
@@ -278,6 +290,180 @@ export async function exportCanvasAsPng(
         const url = URL.createObjectURL(blob);
         triggerDownload(url, filename);
         setTimeout(() => URL.revokeObjectURL(url), 2000);
+      }
+      resolve(blob);
+    }, "image/png");
+  });
+}
+
+/**
+ * Exports whiteboard shapes to a PNG Blob, rejecting with an error if getContext('2d') is null.
+ */
+export async function exportCanvasToBlob(
+  shapesOrCanvas: ShapeData[] | HTMLCanvasElement,
+  options: ExportCanvasOptions = {},
+): Promise<Blob> {
+  let canvas: HTMLCanvasElement;
+
+  if (shapesOrCanvas instanceof HTMLCanvasElement) {
+    canvas = shapesOrCanvas;
+  } else {
+    if (typeof document === "undefined") {
+      throw new Error("Canvas export is only supported in browser environments.");
+    }
+    const bounds = calculateCanvasBounds(
+      shapesOrCanvas,
+      options.width,
+      options.height,
+      options.padding,
+    );
+    const width = options.width ?? bounds.width;
+    const height = options.height ?? bounds.height;
+    const scale = options.scale ?? 2;
+
+    canvas = document.createElement("canvas");
+    canvas.width = Math.round(width * scale);
+    canvas.height = Math.round(height * scale);
+
+    const ctx = canvas.getContext("2d");
+    if (!ctx) {
+      const errorMsg =
+        "Failed to acquire 2D rendering context from canvas: getContext('2d') returned null";
+      console.error(`[canvasExport] ${errorMsg}`);
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(
+          new CustomEvent("whiteboard:export-error", {
+            detail: { message: errorMsg },
+          }),
+        );
+      }
+      throw new Error(errorMsg);
+    }
+
+    ctx.scale(scale, scale);
+    ctx.clearRect(0, 0, width, height);
+
+    const activeShapes = shapesOrCanvas.filter((s) => !s.deleted && s.points.length >= 2);
+    for (const shape of activeShapes) {
+      ctx.save();
+      ctx.globalAlpha = shape.opacity ?? 1;
+
+      if (shape.type === "eraser") {
+        ctx.globalCompositeOperation = "destination-out";
+        ctx.lineWidth = shape.width;
+        ctx.lineCap = "round";
+        ctx.lineJoin = "round";
+        ctx.beginPath();
+        ctx.moveTo(shape.points[0], shape.points[1]);
+        for (let i = 2; i < shape.points.length; i += 2) {
+          ctx.lineTo(shape.points[i], shape.points[i + 1]);
+        }
+        ctx.stroke();
+        ctx.restore();
+        continue;
+      }
+
+      ctx.strokeStyle = shape.color;
+      ctx.lineWidth = shape.width;
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+
+      if (shape.type === "pen") {
+        ctx.beginPath();
+        ctx.moveTo(shape.points[0], shape.points[1]);
+        for (let i = 2; i < shape.points.length; i += 2) {
+          ctx.lineTo(shape.points[i], shape.points[i + 1]);
+        }
+        ctx.stroke();
+      } else if (shape.type === "line") {
+        ctx.beginPath();
+        ctx.moveTo(shape.points[0], shape.points[1]);
+        ctx.lineTo(shape.points[2], shape.points[3]);
+        ctx.stroke();
+      } else if (shape.type === "rect") {
+        const x = shape.points[0];
+        const y = shape.points[1];
+        const w = shape.points[2] - x;
+        const h = shape.points[3] - y;
+        ctx.strokeRect(x, y, w, h);
+      } else if (shape.type === "circle") {
+        const cx = shape.points[0];
+        const cy = shape.points[1];
+        const ex = shape.points.length >= 4 ? shape.points[2] : cx;
+        const ey = shape.points.length >= 4 ? shape.points[3] : cy;
+        const rx = Math.abs(ex - cx);
+        const ry = Math.abs(ey - cy);
+        ctx.beginPath();
+        ctx.ellipse(cx, cy, rx || 1, ry || 1, 0, 0, Math.PI * 2);
+        ctx.stroke();
+      } else if (shape.type === "sticky") {
+        const x = shape.points[0];
+        const y = shape.points[1];
+        const right = shape.points[2] ?? x + 220;
+        const bottom = shape.points[3] ?? y + 160;
+        const w = Math.max(160, right - x);
+        const h = Math.max(120, bottom - y);
+
+        ctx.fillStyle = "#fef08a";
+        ctx.strokeStyle = "#eab308";
+        ctx.lineWidth = 1;
+        drawRoundRect(ctx, x, y, w, h, 6);
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.fillStyle = "#fde047";
+        ctx.beginPath();
+        ctx.moveTo(x + 6, y);
+        ctx.lineTo(x + w - 6, y);
+        ctx.quadraticCurveTo(x + w, y, x + w, y + 6);
+        ctx.lineTo(x + w, y + 24);
+        ctx.lineTo(x, y + 24);
+        ctx.lineTo(x, y + 6);
+        ctx.quadraticCurveTo(x, y, x + 6, y);
+        ctx.closePath();
+        ctx.fill();
+
+        ctx.fillStyle = "#854d0e";
+        ctx.font = "bold 10px sans-serif";
+        ctx.fillText("STICKY NOTE", x + 8, y + 16);
+
+        if (shape.text) {
+          ctx.fillStyle = "#1e293b";
+          ctx.font = "11px sans-serif";
+          const lines = shape.text.replace(/^[#*\-`\s]+/gm, "").split("\n");
+          let lineY = y + 40;
+          for (const line of lines) {
+            if (lineY > y + h - 10) break;
+            ctx.fillText(line.slice(0, 30), x + 8, lineY);
+            lineY += 15;
+          }
+        }
+      }
+
+      ctx.restore();
+    }
+  }
+
+  const ctx = canvas.getContext("2d");
+  if (!ctx) {
+    const errorMsg =
+      "Failed to acquire 2D rendering context from canvas: getContext('2d') returned null";
+    console.error(`[canvasExport] ${errorMsg}`);
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(
+        new CustomEvent("whiteboard:export-error", {
+          detail: { message: errorMsg },
+        }),
+      );
+    }
+    throw new Error(errorMsg);
+  }
+
+  return new Promise<Blob>((resolve, reject) => {
+    canvas.toBlob((blob) => {
+      if (!blob) {
+        reject(new Error("Canvas serialization failed: toBlob returned null"));
+        return;
       }
       resolve(blob);
     }, "image/png");
