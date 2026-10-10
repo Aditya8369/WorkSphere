@@ -117,22 +117,62 @@ export class AmenityClassifier {
   }
 
   /**
-   * Tokenizes text into normalized words.
+   * Sanitizes OCR tokens by stripping leading/trailing whitespace,
+   * collapsing internal whitespace sequences (including newlines) to single spaces.
+   */
+  public sanitizeToken(token: string): string {
+    if (!token) return "";
+    return token.trim().replace(/\s+/g, " ");
+  }
+
+  /**
+   * Tokenizes text into normalized words with whitespace sanitization.
    */
   public tokenize(text: string): string[] {
     if (!text) return [];
-    return text
+    const sanitized = this.sanitizeToken(text);
+    return sanitized
       .toLowerCase()
       .replace(/[^\w\s-]/g, " ")
       .split(/\s+/)
+      .map((t) => this.sanitizeToken(t))
       .filter((token) => token.length > 1);
+  }
+
+  /**
+   * Extracts, sanitizes, and deduplicates menu and amenity items case-insensitively
+   * from raw OCR string or text blocks.
+   */
+  public extractMenuItems(items: string[] | ExtractedTextBlock[]): string[] {
+    if (!items || items.length === 0) return [];
+
+    const rawStrings = items.map((item) =>
+      typeof item === "string" ? item : item.text
+    );
+
+    const seen = new Set<string>();
+    const sanitizedItems: string[] = [];
+
+    for (const raw of rawStrings) {
+      const sanitized = this.sanitizeToken(raw);
+      if (!sanitized) continue;
+
+      const lower = sanitized.toLowerCase();
+      if (!seen.has(lower)) {
+        seen.add(lower);
+        sanitizedItems.push(sanitized);
+      }
+    }
+
+    return sanitizedItems;
   }
 
   /**
    * Evaluates text against regex dictionaries and computes confidence scores.
    */
   public classify(rawText: string): ClassificationResult {
-    const tokens = this.tokenize(rawText);
+    const cleanRawText = this.sanitizeToken(rawText);
+    const tokens = this.tokenize(cleanRawText);
     const classifiedAmenities: ClassifiedAmenity[] = [];
 
     for (const key of Object.keys(this.definitions) as AmenityCategory[]) {
@@ -180,7 +220,8 @@ export class AmenityClassifier {
    * Formats extracted raw text into structured prompts for Groq LLM.
    */
   public generatePrompt(extractedBlocks: ExtractedTextBlock[]): string {
-    const rawText = extractedBlocks.map((b) => b.text).join("\n");
+    const sanitizedItems = this.extractMenuItems(extractedBlocks);
+    const rawText = sanitizedItems.join("\n");
 
     return `You are an expert venue analyst. Analyze the following text extracted from a cafe's menu or amenities board.
     Determine if the venue has the following amenities:
