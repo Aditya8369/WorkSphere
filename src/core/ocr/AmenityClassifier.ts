@@ -23,11 +23,23 @@ export interface AmenityDefinition {
   minConfidenceThreshold: number;
 }
 
+export type AmenityConfidenceTier = "high" | "moderate" | "low";
+
+export interface AmenityConfidenceBadge {
+  label: string;
+  tier: AmenityConfidenceTier;
+  percentage: number;
+  color: string;
+}
+
 export interface ClassifiedAmenity {
   category: AmenityCategory;
   displayName: string;
   confidence: number;
   matchedKeywords: string[];
+  confidenceBadge?: string;
+  confidenceTier?: AmenityConfidenceTier;
+  confidenceScoreBadge?: AmenityConfidenceBadge;
 }
 
 export interface ClassificationResult {
@@ -197,11 +209,16 @@ export class AmenityClassifier {
         const calculatedConfidence = Math.min(1.0, highestWeight + frequencyBonus);
 
         if (calculatedConfidence >= def.minConfidenceThreshold) {
+          const roundedConfidence = Math.round(calculatedConfidence * 100) / 100;
+          const badge = this.getConfidenceBadge(roundedConfidence);
           classifiedAmenities.push({
             category: def.category,
             displayName: def.displayName,
-            confidence: Math.round(calculatedConfidence * 100) / 100,
+            confidence: roundedConfidence,
             matchedKeywords: Array.from(new Set(matchedKeywords)),
+            confidenceBadge: badge.label,
+            confidenceTier: badge.tier,
+            confidenceScoreBadge: badge,
           });
         }
       }
@@ -213,6 +230,33 @@ export class AmenityClassifier {
       amenities: classifiedAmenities,
       tokens,
       rawText,
+    };
+  }
+
+  /**
+   * Generates a confidence score badge metadata object for a detected amenity.
+   */
+  public getConfidenceBadge(confidence: number): AmenityConfidenceBadge {
+    const percentage = Math.round(Math.max(0, Math.min(1, confidence)) * 100);
+    let tier: AmenityConfidenceTier = "low";
+    let color = "blue";
+
+    if (confidence >= 0.85) {
+      tier = "high";
+      color = "emerald";
+    } else if (confidence >= 0.7) {
+      tier = "moderate";
+      color = "amber";
+    }
+
+    const tierLabel = tier.charAt(0).toUpperCase() + tier.slice(1);
+    const label = `${percentage}% ${tierLabel} Confidence`;
+
+    return {
+      label,
+      tier,
+      percentage,
+      color,
     };
   }
 

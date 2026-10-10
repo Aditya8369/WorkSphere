@@ -1,12 +1,20 @@
 /**
  * DTNBundleProtocol.ts
  * Implements the Bundle Protocol (RFC 9171) for encapsulating and fragmenting messages for low-bandwidth BLE transfer.
- * Handles bundle creation, fragmentation, and reassembly logic.
+ * Handles bundle creation, fragmentation, and reassembly logic with priority bundle queuing.
  */
+
+export enum BundlePriority {
+    BULK = 0,
+    NORMAL = 1,
+    EXPEDITED = 2,
+    CRITICAL = 3,
+}
 
 export interface BundleHeader {
     version: number;
     processingFlags: number;
+    priority: BundlePriority | number;
     crcType: number;
     payloadLength: number;
     destination: string;
@@ -32,7 +40,13 @@ export class DTNBundleProtocol {
         this.maxFragmentSize = maxFragmentSize;
     }
 
-    public createBundle(source: string, destination: string, payload: Uint8Array, lifetimeMs: number = 3600000): Bundle[] {
+    public createBundle(
+        source: string,
+        destination: string,
+        payload: Uint8Array,
+        lifetimeMs: number = 3600000,
+        priority: BundlePriority = BundlePriority.NORMAL
+    ): Bundle[] {
         const totalLength = payload.length;
         const numFragments = Math.ceil(totalLength / this.maxFragmentSize);
         const bundles: Bundle[] = [];
@@ -45,6 +59,7 @@ export class DTNBundleProtocol {
             const header: BundleHeader = {
                 version: 7, // BPv7
                 processingFlags: numFragments > 1 ? 0x01 : 0x00, // Fragment flag
+                priority,
                 crcType: 0x01,
                 payloadLength: length,
                 destination,
@@ -61,6 +76,37 @@ export class DTNBundleProtocol {
         }
 
         return bundles;
+    }
+
+    /**
+     * Compares two bundles for priority queuing:
+     * 1. Higher urgency (priority) comes first (descending order).
+     * 2. If priorities are equal, earlier creation timestamp comes first (FIFO).
+     * 3. If timestamps are equal, lower sequence number comes first.
+     */
+    public static comparePriority(a: Bundle, b: Bundle): number {
+        const priorityA = a.header.priority ?? BundlePriority.NORMAL;
+        const priorityB = b.header.priority ?? BundlePriority.NORMAL;
+        if (priorityB !== priorityA) {
+            return priorityB - priorityA;
+        }
+
+        const timeA = a.header.creationTimestamp ?? 0;
+        const timeB = b.header.creationTimestamp ?? 0;
+        if (timeA !== timeB) {
+            return timeA - timeB;
+        }
+
+        const seqA = a.header.sequenceNumber ?? 0;
+        const seqB = b.header.sequenceNumber ?? 0;
+        return seqA - seqB;
+    }
+
+    /**
+     * Sorts a bundle queue in place by priority urgency, tie-breaking by FIFO creation order.
+     */
+    public static sortQueueByPriority(queue: Bundle[]): Bundle[] {
+        return queue.sort(DTNBundleProtocol.comparePriority);
     }
 
     public serializeBundle(bundle: Bundle): Uint8Array {
@@ -90,6 +136,11 @@ export class DTNBundleProtocol {
             const headerBytes = data.slice(2, 2 + headerLength);
             const headerStr = new TextDecoder().decode(headerBytes);
             const header = JSON.parse(headerStr) as BundleHeader;
+
+            if (header.priority === undefined) {
+                header.priority = BundlePriority.NORMAL;
+            }
+
             const payload = data.slice(2 + headerLength);
 
             return { header, payload };
