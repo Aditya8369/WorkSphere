@@ -4,7 +4,7 @@
  * Acts as both a GATT server and client to facilitate ad-hoc mesh networking.
  */
 
-import { DTNBundleProtocol, Bundle } from './DTNBundleProtocol';
+import { DTNBundleProtocol, Bundle, BundlePriority } from './DTNBundleProtocol';
 
 // Standardized UUIDs for WorkSphere DTN Service and Characteristics
 const DTN_SERVICE_UUID = '0000ffe0-0000-1000-8000-00805f9b34fb';
@@ -21,9 +21,28 @@ export class BLEMeshRouter {
     this.onBundleReceived = null;
   }
 
-  public enqueueMessage(source: string, destination: string, payload: Uint8Array): void {
-    const bundles = this.protocol.createBundle(source, destination, payload);
+  public enqueueMessage(
+    source: string,
+    destination: string,
+    payload: Uint8Array,
+    priority: BundlePriority = BundlePriority.NORMAL,
+    lifetimeMs: number = 3600000
+  ): void {
+    const bundles = this.protocol.createBundle(source, destination, payload, lifetimeMs, priority);
     this.outgoingQueue.push(...bundles);
+    DTNBundleProtocol.sortQueueByPriority(this.outgoingQueue);
+  }
+
+  public getQueue(): Bundle[] {
+    return [...this.outgoingQueue];
+  }
+
+  public getQueueLength(): number {
+    return this.outgoingQueue.length;
+  }
+
+  public clearQueue(): void {
+    this.outgoingQueue = [];
   }
 
   public setOnBundleReceived(callback: (bundle: Bundle) => void): void {
