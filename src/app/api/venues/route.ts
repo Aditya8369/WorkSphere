@@ -158,6 +158,8 @@ export async function GET(req: NextRequest) {
       }
 
       if (queryParam) {
+        const semanticWeightParam = searchParams.get("semanticWeight");
+        const fullTextWeightParam = searchParams.get("fullTextWeight");
         const ranked = await searchVenuesWithRrf(queryParam, {
           minLat:
             minLatParam !== null && Number.isFinite(Number(minLatParam))
@@ -176,6 +178,14 @@ export async function GET(req: NextRequest) {
               ? Number(maxLngParam)
               : undefined,
           cities: citiesParam ? splitSearchList(citiesParam) : undefined,
+          semanticWeight:
+            semanticWeightParam !== null && Number.isFinite(Number(semanticWeightParam))
+              ? Number(semanticWeightParam)
+              : undefined,
+          fullTextWeight:
+            fullTextWeightParam !== null && Number.isFinite(Number(fullTextWeightParam))
+              ? Number(fullTextWeightParam)
+              : undefined,
         });
         const rankedIds = ranked.map(({ id }) => id);
         const matchingVenues = rankedIds.length
@@ -267,6 +277,8 @@ export async function GET(req: NextRequest) {
       "maxLat",
       "minLng",
       "maxLng",
+      "semanticWeight",
+      "fullTextWeight",
     ];
     for (const key of keys) {
       const val = searchParams.get(key);
@@ -458,6 +470,14 @@ export async function GET(req: NextRequest) {
         maxLng: where.longitude?.lte,
         category: where.category,
         cities: rawData.cities ? splitSearchList(String(rawData.cities)) : undefined,
+        semanticWeight:
+          rawData.semanticWeight !== undefined && Number.isFinite(Number(rawData.semanticWeight))
+            ? Number(rawData.semanticWeight)
+            : undefined,
+        fullTextWeight:
+          rawData.fullTextWeight !== undefined && Number.isFinite(Number(rawData.fullTextWeight))
+            ? Number(rawData.fullTextWeight)
+            : undefined,
       });
       const rankedIds = ranked.map(({ id }) => id);
       const matchingVenues = rankedIds.length

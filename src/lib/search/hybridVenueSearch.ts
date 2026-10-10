@@ -8,6 +8,9 @@ export interface HybridVenueSearchFilters {
   maxLng?: number;
   category?: string;
   cities?: string[];
+  semanticWeight?: number;
+  fullTextWeight?: number;
+  rrfK?: number;
 }
 
 export interface RankedVenueId {
@@ -98,6 +101,23 @@ export async function searchVenuesWithRrf(
   const embedding = await embedSearchQuery(searchQuery);
   const embeddingString = embedding ? `[${embedding.join(",")}]` : null;
   const predicates: Prisma.Sql[] = [];
+
+  const rawTextWeight =
+    typeof filters.fullTextWeight === "number" && Number.isFinite(filters.fullTextWeight)
+      ? Math.max(0, Math.min(1, filters.fullTextWeight))
+      : 0.5;
+  const rawSemanticWeight =
+    typeof filters.semanticWeight === "number" && Number.isFinite(filters.semanticWeight)
+      ? Math.max(0, Math.min(1, filters.semanticWeight))
+      : 0.5;
+
+  const sumWeights = rawTextWeight + rawSemanticWeight;
+  const fullTextWeight = sumWeights > 0 ? rawTextWeight / sumWeights : 0.5;
+  const semanticWeight = sumWeights > 0 ? rawSemanticWeight / sumWeights : 0.5;
+  const rrfK =
+    typeof filters.rrfK === "number" && Number.isFinite(filters.rrfK) && filters.rrfK > 0
+      ? Math.floor(filters.rrfK)
+      : 60;
 
   if (filters.minLat !== undefined) {
     predicates.push(Prisma.sql`v."latitude" >= ${filters.minLat}`);
@@ -191,8 +211,8 @@ export async function searchVenuesWithRrf(
     fused_scores AS (
       SELECT
         "id",
-        SUM(CASE WHEN rank_bm25 IS NOT NULL THEN 1.0 / (60 + rank_bm25) ELSE 0 END)
-        + SUM(CASE WHEN rank_vector IS NOT NULL THEN 1.0 / (60 + rank_vector) ELSE 0 END) AS rrf_score
+        SUM(CASE WHEN rank_bm25 IS NOT NULL THEN ${fullTextWeight} / (${rrfK} + rank_bm25) ELSE 0 END)
+        + SUM(CASE WHEN rank_vector IS NOT NULL THEN ${semanticWeight} / (${rrfK} + rank_vector) ELSE 0 END) AS rrf_score
       FROM fused_candidates
       GROUP BY "id"
     )
