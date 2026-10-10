@@ -1,8 +1,11 @@
-﻿/**
+/**
  * SpatialAudioPanner.ts
  * Manages the Web Audio API PannerNodes and GainNodes, calculating 3D coordinates and distance attenuation 
  * based on desk layouts. Sanitizes and clamps gain coefficients to [0.0, 1.0] to prevent audio clipping (#5597).
  */
+
+export type DistanceAttenuationCurve = 'linear' | 'inverse';
+export type DistanceAttenuationModel = DistanceAttenuationCurve;
 
 export interface SpatialPeer {
     id: string;
@@ -17,16 +20,18 @@ export class SpatialAudioPanner {
     private peers: Map<string, SpatialPeer>;
     private listener: AudioListener;
     private listenerPosition: { x: number; y: number; z: number };
+    private distanceModel: DistanceAttenuationCurve;
 
     public readonly refDistance = 1;
     public readonly maxDistance = 100;
     public readonly rolloffFactor = 1;
 
-    constructor(audioContext: AudioContext) {
+    constructor(audioContext: AudioContext, initialDistanceModel: DistanceAttenuationCurve = 'inverse') {
         this.audioContext = audioContext;
         this.peers = new Map();
         this.listener = audioContext.listener;
         this.listenerPosition = { x: 0, y: 0, z: 0 };
+        this.distanceModel = initialDistanceModel;
 
         // Set default listener position (center of room)
         if (this.listener.positionX) {
@@ -37,12 +42,53 @@ export class SpatialAudioPanner {
     }
 
     /**
+     * Gets the currently active distance attenuation curve.
+     */
+    public getDistanceModel(): DistanceAttenuationCurve {
+        return this.distanceModel;
+    }
+
+    /**
+     * Alias for getDistanceModel.
+     */
+    public getAttenuationCurve(): DistanceAttenuationCurve {
+        return this.distanceModel;
+    }
+
+    /**
+     * Dynamically updates the distance attenuation curve ('linear' vs 'inverse') across all active panner and gain nodes.
+     */
+    public setDistanceModel(model: DistanceAttenuationCurve): void {
+        this.distanceModel = model;
+
+        // Update all active peers' panner nodes and recalculate gains
+        for (const peer of this.peers.values()) {
+            if (peer.pannerNode) {
+                peer.pannerNode.distanceModel = model;
+            }
+            if (peer.gainNode) {
+                const clampedGain = this.calculateDistanceAttenuation(peer.position, this.listenerPosition, model);
+                peer.gainNode.gain.setValueAtTime(clampedGain, this.audioContext.currentTime);
+            }
+        }
+    }
+
+    /**
+     * Alias for setDistanceModel.
+     */
+    public setAttenuationCurve(curve: DistanceAttenuationCurve): void {
+        this.setDistanceModel(curve);
+    }
+
+    /**
      * Calculates distance attenuation gain clamped strictly between 0.0 and 1.0.
+     * Supports both 'linear' and 'inverse' attenuation curves.
      * Guards against negative values when distance exceeds max range, and protects against NaN (#5597).
      */
     public calculateDistanceAttenuation(
         sourcePos: { x: number; y: number; z: number },
-        listenerPos: { x: number; y: number; z: number } = this.listenerPosition
+        listenerPos: { x: number; y: number; z: number } = this.listenerPosition,
+        model: DistanceAttenuationCurve = this.distanceModel
     ): number {
         const dx = (sourcePos.x ?? 0) - (listenerPos.x ?? 0);
         const dy = (sourcePos.y ?? 0) - (listenerPos.y ?? 0);
@@ -55,14 +101,24 @@ export class SpatialAudioPanner {
             return 1.0;
         }
 
-        // Inverse distance attenuation model with safe clamping
-        // gain = refDistance / (refDistance + rolloffFactor * (max(distance, refDistance) - refDistance))
-        const clampedDistance = Math.min(Math.max(distance, this.refDistance), this.maxDistance);
-        let calculatedGain = this.refDistance / (this.refDistance + this.rolloffFactor * (clampedDistance - this.refDistance));
-
         if (distance > this.maxDistance) {
             // Far distance attenuation dropoff
-            calculatedGain = 0.0;
+            return 0.0;
+        }
+
+        let calculatedGain: number;
+
+        if (model === 'linear') {
+            // Linear distance attenuation model:
+            // gain = 1 - rolloffFactor * (max(distance, refDistance) - refDistance) / (maxDistance - refDistance)
+            const effectiveDistance = Math.min(Math.max(distance, this.refDistance), this.maxDistance);
+            const distanceRange = Math.max(1e-6, this.maxDistance - this.refDistance);
+            calculatedGain = 1 - this.rolloffFactor * ((effectiveDistance - this.refDistance) / distanceRange);
+        } else {
+            // Inverse distance attenuation model:
+            // gain = refDistance / (refDistance + rolloffFactor * (max(distance, refDistance) - refDistance))
+            const clampedDistance = Math.min(Math.max(distance, this.refDistance), this.maxDistance);
+            calculatedGain = this.refDistance / (this.refDistance + this.rolloffFactor * (clampedDistance - this.refDistance));
         }
 
         // Strict clamp to [0.0, 1.0] and NaN check
@@ -78,7 +134,7 @@ export class SpatialAudioPanner {
 
         const panner = this.audioContext.createPanner();
         panner.panningModel = 'HRTF';
-        panner.distanceModel = 'inverse';
+        panner.distanceModel = this.distanceModel;
         panner.refDistance = this.refDistance;
         panner.maxDistance = this.maxDistance;
         panner.rolloffFactor = this.rolloffFactor;
