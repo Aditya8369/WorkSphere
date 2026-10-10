@@ -1,85 +1,268 @@
 /**
  * DebateOrchestrator.ts
- * Manages the multi-turn conversation loop and state between the debating AI agents.
- * Coordinates the Groq API calls to simulate a structured debate and collect individual scores.
+ * Manages the multi-turn conversation loop, Bayesian belief updating, and persona conviction state between debating AI agents.
+ * Coordinates multi-agent deliberation, tracks epistemic conviction revisions, and calculates convergence.
  */
 
 import { PersonaType, PERSONA_CONFIGS, getPersonaPrompt } from './AgentPersona';
+
+export interface BayesianConvictionConfig {
+    plasticityRate: number; // alpha_i in (0, 1): learning rate / epistemic openness
+    temperature: number;    // sigma: temperature scaling parameter for bounded tanh response
+    convergenceThreshold: number; // epsilon: max score discrepancy for early consensus termination
+    credibilityMatrix?: Partial<Record<PersonaType, Partial<Record<PersonaType, number>>>>; // kappa_ij
+}
+
+export interface PersonaConvictionState {
+    priorScore: number;
+    posteriorScore: number;
+    confidence: number; // 0.0 - 1.0
+    shiftDelta: number;
+    reasoning?: string;
+}
 
 export interface DebateRound {
     roundNumber: number;
     persona: PersonaType;
     argument: string;
-    score: number; // 0-100
+    score: number; // 0-100 (posterior score for this round)
+    conviction?: PersonaConvictionState;
 }
 
 export interface DebateResult {
     rounds: DebateRound[];
     finalScores: Record<PersonaType, number>;
+    convictionTrajectories?: Record<PersonaType, number[]>;
+    hasConverged?: boolean;
+    totalRoundsExecuted?: number;
 }
+
+export const DEFAULT_CONVICTION_CONFIG: BayesianConvictionConfig = {
+    plasticityRate: 0.30,
+    temperature: 20.0,
+    convergenceThreshold: 3.0,
+    credibilityMatrix: {
+        BUDGET_CONSCIOUS: {
+            FOCUS_ADVOCATE: 0.85,
+            SOCIAL_NETWORKER: 0.70,
+        },
+        FOCUS_ADVOCATE: {
+            BUDGET_CONSCIOUS: 0.75,
+            SOCIAL_NETWORKER: 0.60,
+        },
+        SOCIAL_NETWORKER: {
+            BUDGET_CONSCIOUS: 0.80,
+            FOCUS_ADVOCATE: 0.75,
+        },
+    },
+};
 
 export class DebateOrchestrator {
     private maxRounds: number;
     private personas: PersonaType[];
+    private convictionConfig: BayesianConvictionConfig;
 
-    constructor(maxRounds: number = 2) {
-        this.maxRounds = maxRounds;
+    constructor(
+        maxRounds: number = 2,
+        convictionConfig: Partial<BayesianConvictionConfig> = {}
+    ) {
+        this.maxRounds = Math.max(1, maxRounds);
         this.personas = Object.keys(PERSONA_CONFIGS) as PersonaType[];
+        this.convictionConfig = {
+            ...DEFAULT_CONVICTION_CONFIG,
+            ...convictionConfig,
+            credibilityMatrix: {
+                ...DEFAULT_CONVICTION_CONFIG.credibilityMatrix,
+                ...(convictionConfig.credibilityMatrix || {}),
+            },
+        };
     }
 
     /**
-     * Simulates a multi-agent debate for a given venue.
-     * In a production environment, this would call the Groq API for each persona.
+     * Calculates the Bayesian posterior conviction update for an agent persona given peer scores.
+     * Implements bounded epistemic update: S_i^(r+1) = S_i^(r) + alpha_i * sum_{j != i} [ kappa_ij * tanh((S_j^(r) - S_i^(r)) / sigma) * (sigma / 2) ]
+     */
+    public static updateBayesianConviction(
+        currentScore: number,
+        peerScores: { persona: PersonaType; score: number }[],
+        persona: PersonaType,
+        configOverrides: Partial<BayesianConvictionConfig> = {}
+    ): PersonaConvictionState {
+        const config: BayesianConvictionConfig = {
+            ...DEFAULT_CONVICTION_CONFIG,
+            ...configOverrides,
+            credibilityMatrix: {
+                ...DEFAULT_CONVICTION_CONFIG.credibilityMatrix,
+                ...(configOverrides.credibilityMatrix || {}),
+            },
+        };
+
+        const alpha = Math.max(0.01, Math.min(1.0, config.plasticityRate));
+        const sigma = Math.max(1.0, config.temperature);
+
+        let totalInfluence = 0;
+        let influentialPeersCount = 0;
+
+        for (const peer of peerScores) {
+            if (peer.persona === persona) continue;
+
+            const kappa = config.credibilityMatrix?.[persona]?.[peer.persona] ?? 1.0;
+            const delta = peer.score - currentScore;
+
+            // Bounded non-linear influence curve
+            const tanhResponse = Math.tanh(delta / sigma);
+            totalInfluence += kappa * tanhResponse * (sigma * 0.5);
+            influentialPeersCount++;
+        }
+
+        const shiftDelta = influentialPeersCount > 0 ? alpha * totalInfluence : 0;
+        const unclampedPosterior = currentScore + shiftDelta;
+        const posteriorScore = Math.max(0, Math.min(100, Math.round(unclampedPosterior * 10) / 10));
+
+        // Confidence inversely scales with epistemic volatility
+        const confidence = Math.max(0.1, Math.min(1.0, 1.0 - Math.abs(shiftDelta) / 40.0));
+
+        return {
+            priorScore: currentScore,
+            posteriorScore,
+            confidence: Math.round(confidence * 100) / 100,
+            shiftDelta: Math.round(shiftDelta * 10) / 10,
+        };
+    }
+
+    /**
+     * Simulates a multi-agent debate for a given venue, incorporating Bayesian belief revisions across rounds.
      */
     public async runDebate(venueData: Record<string, unknown>): Promise<DebateResult> {
         const rounds: DebateRound[] = [];
-        const finalScores: Record<PersonaType, number> = {
+        const convictionTrajectories: Record<PersonaType, number[]> = {
+            BUDGET_CONSCIOUS: [],
+            FOCUS_ADVOCATE: [],
+            SOCIAL_NETWORKER: [],
+        };
+
+        let currentScores: Record<PersonaType, number> = {
             BUDGET_CONSCIOUS: 0,
             FOCUS_ADVOCATE: 0,
             SOCIAL_NETWORKER: 0,
         };
 
+        let hasConverged = false;
+        let executedRounds = 0;
+
         for (let round = 1; round <= this.maxRounds; round++) {
+            executedRounds = round;
+            const roundPeerScores: { persona: PersonaType; score: number }[] = [];
+            const isFirstRound = round === 1;
+
             for (const persona of this.personas) {
                 const prompt = getPersonaPrompt(persona, venueData);
 
-                // Mock API call to Groq LLM
-                const { argument, score } = await this.mockGroqCall(persona, prompt);
+                if (isFirstRound) {
+                    // Initial evaluation without prior peer interaction
+                    const { argument, score } = await this.mockGroqCall(persona, prompt, 1);
+                    currentScores[persona] = score;
+                    convictionTrajectories[persona].push(score);
+                    roundPeerScores.push({ persona, score });
 
-                rounds.push({
-                    roundNumber: round,
-                    persona,
-                    argument,
-                    score
-                });
+                    rounds.push({
+                        roundNumber: round,
+                        persona,
+                        argument,
+                        score,
+                        conviction: {
+                            priorScore: score,
+                            posteriorScore: score,
+                            confidence: 1.0,
+                            shiftDelta: 0,
+                        },
+                    });
+                } else {
+                    // Bayesian conviction update using peer scores from prior round
+                    const previousScoresList = this.personas.map(p => ({
+                        persona: p,
+                        score: currentScores[p],
+                    }));
 
-                // Accumulate scores for final consensus
-                finalScores[persona] += score;
+                    const conviction = DebateOrchestrator.updateBayesianConviction(
+                        currentScores[persona],
+                        previousScoresList,
+                        persona,
+                        this.convictionConfig
+                    );
+
+                    const { argument } = await this.mockGroqCall(
+                        persona,
+                        prompt,
+                        round,
+                        conviction
+                    );
+
+                    currentScores[persona] = conviction.posteriorScore;
+                    convictionTrajectories[persona].push(conviction.posteriorScore);
+                    roundPeerScores.push({ persona, score: conviction.posteriorScore });
+
+                    rounds.push({
+                        roundNumber: round,
+                        persona,
+                        argument,
+                        score: conviction.posteriorScore,
+                        conviction,
+                    });
+                }
+            }
+
+            // Check convergence criterion: max pairwise discrepancy < epsilon
+            const currentScoreValues = Object.values(currentScores);
+            const scoreSpread = Math.max(...currentScoreValues) - Math.min(...currentScoreValues);
+            if (scoreSpread <= this.convictionConfig.convergenceThreshold) {
+                hasConverged = true;
+                break;
             }
         }
 
-        // Average the scores across rounds
-        for (const persona of this.personas) {
-            finalScores[persona] = Math.round(finalScores[persona] / this.maxRounds);
-        }
+        const finalScores: Record<PersonaType, number> = {
+            BUDGET_CONSCIOUS: Math.round(currentScores.BUDGET_CONSCIOUS),
+            FOCUS_ADVOCATE: Math.round(currentScores.FOCUS_ADVOCATE),
+            SOCIAL_NETWORKER: Math.round(currentScores.SOCIAL_NETWORKER),
+        };
 
-        return { rounds, finalScores };
+        return {
+            rounds,
+            finalScores,
+            convictionTrajectories,
+            hasConverged,
+            totalRoundsExecuted: executedRounds,
+        };
     }
 
-    private async mockGroqCall(persona: PersonaType, prompt: string): Promise<{ argument: string; score: number }> {
+    private async mockGroqCall(
+        persona: PersonaType,
+        _prompt: string,
+        round: number,
+        conviction?: PersonaConvictionState
+    ): Promise<{ argument: string; score: number }> {
         // Simulate network latency
-        await new Promise(resolve => setTimeout(resolve, 300));
+        await new Promise(resolve => setTimeout(resolve, 250));
 
         const config = PERSONA_CONFIGS[persona];
-        let score = 50; // Base score
+        let baseScore = 50;
 
-        // Mock scoring logic based on weights
-        if (persona === 'BUDGET_CONSCIOUS') score = 75;
-        if (persona === 'FOCUS_ADVOCATE') score = 60;
-        if (persona === 'SOCIAL_NETWORKER') score = 85;
+        if (persona === 'BUDGET_CONSCIOUS') baseScore = 75;
+        if (persona === 'FOCUS_ADVOCATE') baseScore = 60;
+        if (persona === 'SOCIAL_NETWORKER') baseScore = 85;
 
-        const argument = `As ${config.name}, I evaluate this venue. Based on my priorities, I assign it a score of ${score}/100. The venue shows promise but has room for improvement in specific areas.`;
+        const effectiveScore = conviction ? conviction.posteriorScore : baseScore;
 
-        return { argument, score };
+        let argument: string;
+        if (round === 1 || !conviction) {
+            argument = `As ${config.name}, I evaluate this venue with an initial conviction score of ${effectiveScore}/100 based on core weighted criteria.`;
+        } else {
+            const direction = conviction.shiftDelta >= 0 ? 'upward' : 'downward';
+            const deltaAbs = Math.abs(conviction.shiftDelta);
+            argument = `As ${config.name}, in round ${round}, I updated my belief from ${conviction.priorScore} to ${conviction.posteriorScore}/100 (${direction} shift of ${deltaAbs} pts, confidence ${(conviction.confidence * 100).toFixed(0)}%) after evaluating peer arguments and counter-evidence.`;
+        }
+
+        return { argument, score: effectiveScore };
     }
 }
