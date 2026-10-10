@@ -7,6 +7,7 @@
 export interface FileChunk {
   fileId: string;
   chunkIndex: number;
+  sequenceNumber?: number;
   totalChunks: number;
   fileName: string;
   fileSize: number;
@@ -30,6 +31,7 @@ export class ChunkedFileTransfer {
     fileSize: number;
     totalChunks: number;
     receivedBytes: number;
+    receivedSequenceNumbers: Set<number>;
   }>;
 
   private onProgressCallback: ((progress: TransferProgress) => void) | null;
@@ -57,6 +59,7 @@ export class ChunkedFileTransfer {
       const chunk: FileChunk = {
         fileId,
         chunkIndex: i,
+        sequenceNumber: i,
         totalChunks,
         fileName: file.name,
         fileSize: file.size,
@@ -71,25 +74,37 @@ export class ChunkedFileTransfer {
   }
 
   public processIncomingChunk(chunk: FileChunk, sendAckFn: (fileId: string, chunkIndex: number) => void): void {
+    // Validate chunk parameters
+    if (chunk.chunkIndex < 0 || chunk.chunkIndex >= chunk.totalChunks) {
+      console.warn(`[ChunkedFileTransfer] Discarding out-of-bounds chunk index ${chunk.chunkIndex} for total ${chunk.totalChunks}`);
+      return;
+    }
+
     if (!this.receivingFiles.has(chunk.fileId)) {
       this.receivingFiles.set(chunk.fileId, {
         chunks: new Map(),
         fileName: chunk.fileName,
         fileSize: chunk.fileSize,
         totalChunks: chunk.totalChunks,
-        receivedBytes: 0
+        receivedBytes: 0,
+        receivedSequenceNumbers: new Set()
       });
     }
 
     const fileState = this.receivingFiles.get(chunk.fileId)!;
     
-    // Ignore duplicate chunks
-    if (fileState.chunks.has(chunk.chunkIndex)) {
+    // Resolve duplicate chunk sequence numbers / indices
+    const seqNum = chunk.sequenceNumber ?? chunk.chunkIndex;
+    const isDuplicate = fileState.chunks.has(chunk.chunkIndex) || fileState.receivedSequenceNumbers.has(seqNum);
+
+    if (isDuplicate) {
+      // Re-acknowledge duplicate chunk to resolve sender ACK timeout without double counting bytes
       sendAckFn(chunk.fileId, chunk.chunkIndex);
       return;
     }
 
     fileState.chunks.set(chunk.chunkIndex, chunk.data);
+    fileState.receivedSequenceNumbers.add(seqNum);
     fileState.receivedBytes += chunk.data.byteLength;
 
     sendAckFn(chunk.fileId, chunk.chunkIndex);
@@ -101,7 +116,7 @@ export class ChunkedFileTransfer {
         fileName: chunk.fileName,
         receivedBytes: fileState.receivedBytes,
         totalBytes: chunk.fileSize,
-        percentage: (fileState.receivedBytes / chunk.fileSize) * 100,
+        percentage: Math.min(100, (fileState.receivedBytes / chunk.fileSize) * 100),
         status: 'receiving'
       });
     }
@@ -131,6 +146,28 @@ export class ChunkedFileTransfer {
     }
 
     // Cleanup
+    this.receivingFiles.delete(fileId);
+  }
+
+  public isChunkReceived(fileId: string, chunkIndex: number): boolean {
+    const fileState = this.receivingFiles.get(fileId);
+    return fileState ? fileState.chunks.has(chunkIndex) : false;
+  }
+
+  public getMissingChunks(fileId: string): number[] {
+    const fileState = this.receivingFiles.get(fileId);
+    if (!fileState) return [];
+
+    const missing: number[] = [];
+    for (let i = 0; i < fileState.totalChunks; i++) {
+      if (!fileState.chunks.has(i)) {
+        missing.push(i);
+      }
+    }
+    return missing;
+  }
+
+  public cancelTransfer(fileId: string): void {
     this.receivingFiles.delete(fileId);
   }
 
