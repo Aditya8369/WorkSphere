@@ -70,8 +70,9 @@ export function CanvasWhiteboard({ canvasId }: CanvasWhiteboardProps) {
     setTool("pen");
   }, [clearCanvas, setTool]);
 
-  const handleExportPNG = useCallback(() => {
+  const handleExportPNG = useCallback((ratio?: 1 | 2 | 4) => {
     exportCanvasAsPng(shapeSnapshots, {
+      pixelRatio: ratio ?? 2,
       filename: `whiteboard-${canvasId || "export"}-${Date.now()}.png`,
     });
   }, [shapeSnapshots, canvasId]);
