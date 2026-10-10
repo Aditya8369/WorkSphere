@@ -1,7 +1,7 @@
 /**
  * AmenityClassifier.ts
  * Combines tokenization, regex dictionary pattern matching, and confidence score scoring
- * pipeline along with Groq LLM prompt formatting for venue amenity extraction.
+ * pipeline along with Groq LLM prompt formatting and confidence badges for venue amenity extraction.
  */
 
 export type AmenityCategory =
@@ -30,6 +30,10 @@ export interface AmenityConfidenceBadge {
   tier: AmenityConfidenceTier;
   percentage: number;
   color: string;
+  variant?: "success" | "warning" | "info" | "neutral";
+  bgClass?: string;
+  textClass?: string;
+  borderClass?: string;
 }
 
 export interface ClassifiedAmenity {
@@ -180,7 +184,7 @@ export class AmenityClassifier {
   }
 
   /**
-   * Evaluates text against regex dictionaries and computes confidence scores.
+   * Evaluates text against regex dictionaries and computes confidence scores with badges.
    */
   public classify(rawText: string): ClassificationResult {
     const cleanRawText = this.sanitizeToken(rawText);
@@ -240,13 +244,25 @@ export class AmenityClassifier {
     const percentage = Math.round(Math.max(0, Math.min(1, confidence)) * 100);
     let tier: AmenityConfidenceTier = "low";
     let color = "blue";
+    let variant: "success" | "warning" | "info" | "neutral" = "info";
+    let bgClass = "bg-blue-500/10";
+    let textClass = "text-blue-400";
+    let borderClass = "border-blue-500/20";
 
     if (confidence >= 0.85) {
       tier = "high";
       color = "emerald";
+      variant = "success";
+      bgClass = "bg-emerald-500/10";
+      textClass = "text-emerald-400";
+      borderClass = "border-emerald-500/20";
     } else if (confidence >= 0.7) {
       tier = "moderate";
       color = "amber";
+      variant = "warning";
+      bgClass = "bg-amber-500/10";
+      textClass = "text-amber-400";
+      borderClass = "border-amber-500/20";
     }
 
     const tierLabel = tier.charAt(0).toUpperCase() + tier.slice(1);
@@ -257,6 +273,10 @@ export class AmenityClassifier {
       tier,
       percentage,
       color,
+      variant,
+      bgClass,
+      textClass,
+      borderClass,
     };
   }
 
