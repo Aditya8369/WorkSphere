@@ -13,6 +13,14 @@ export interface UserPreferences {
     socialWeight: number;
 }
 
+export interface ConsensusResult {
+    finalScore: number;
+    consensusStatement: string;
+    isTied?: boolean;
+    dominantPersona?: PersonaType;
+    tiedPersonas?: PersonaType[];
+}
+
 export class ConsensusResolver {
     private defaultPreferences: UserPreferences = {
         budgetWeight: 0.33,
@@ -23,44 +31,134 @@ export class ConsensusResolver {
     public resolveConsensus(
         debateResult: DebateResult,
         userPreferences?: Partial<UserPreferences>
-    ): { finalScore: number; consensusStatement: string } {
+    ): ConsensusResult {
         const prefs = { ...this.defaultPreferences, ...userPreferences };
 
-        // Normalize weights to ensure they sum to 1.0
-        const totalWeight = prefs.budgetWeight + prefs.focusWeight + prefs.socialWeight;
-        const normBudget = prefs.budgetWeight / totalWeight;
-        const normFocus = prefs.focusWeight / totalWeight;
-        const normSocial = prefs.socialWeight / totalWeight;
+        // Normalize weights safely, guarding against 0, negative, or NaN values
+        const rawBudget = Number.isFinite(prefs.budgetWeight) && prefs.budgetWeight >= 0 ? prefs.budgetWeight : 0.33;
+        const rawFocus = Number.isFinite(prefs.focusWeight) && prefs.focusWeight >= 0 ? prefs.focusWeight : 0.34;
+        const rawSocial = Number.isFinite(prefs.socialWeight) && prefs.socialWeight >= 0 ? prefs.socialWeight : 0.33;
+
+        const totalWeight = rawBudget + rawFocus + rawSocial;
+        const normBudget = totalWeight > 0 ? rawBudget / totalWeight : 1 / 3;
+        const normFocus = totalWeight > 0 ? rawFocus / totalWeight : 1 / 3;
+        const normSocial = totalWeight > 0 ? rawSocial / totalWeight : 1 / 3;
+
+        const normWeights: Record<PersonaType, number> = {
+            BUDGET_CONSCIOUS: normBudget,
+            FOCUS_ADVOCATE: normFocus,
+            SOCIAL_NETWORKER: normSocial,
+        };
 
         const scores = debateResult.finalScores;
 
-        // Calculate weighted final score
-        const finalScore = Math.round(
-            (scores.BUDGET_CONSCIOUS * normBudget) +
-            (scores.FOCUS_ADVOCATE * normFocus) +
-            (scores.SOCIAL_NETWORKER * normSocial)
+        // Calculate weighted final score with bounds clamping
+        const rawScore =
+            ((scores.BUDGET_CONSCIOUS ?? 50) * normBudget) +
+            ((scores.FOCUS_ADVOCATE ?? 50) * normFocus) +
+            ((scores.SOCIAL_NETWORKER ?? 50) * normSocial);
+
+        const finalScore = Math.max(0, Math.min(100, Math.round(Number.isFinite(rawScore) ? rawScore : 50)));
+
+        // Resolve ties and deadlocks
+        const { dominantPersona, isTied, tiedPersonas } = this.resolveTieBreak(scores, normWeights);
+
+        // Generate consensus statement incorporating tie resolution
+        const consensusStatement = this.generateConsensusStatement(
+            scores,
+            finalScore,
+            normWeights,
+            dominantPersona,
+            isTied,
+            tiedPersonas
         );
 
-        // Generate consensus statement
-        const consensusStatement = this.generateConsensusStatement(scores, finalScore, prefs);
+        return {
+            finalScore,
+            consensusStatement,
+            isTied,
+            dominantPersona,
+            tiedPersonas,
+        };
+    }
 
-        return { finalScore, consensusStatement };
+    /**
+     * Resolves tied persona scores deterministically using user preference weights as tie-breakers.
+     */
+    public resolveTieBreak(
+        scores: Record<PersonaType, number>,
+        normWeights: Record<PersonaType, number>
+    ): { dominantPersona: PersonaType; isTied: boolean; tiedPersonas: PersonaType[] } {
+        const entries = Object.entries(scores) as [PersonaType, number][];
+        const maxScore = Math.max(...entries.map(([, s]) => s));
+        const topPersonas = entries.filter(([, s]) => Math.abs(s - maxScore) < 1e-6).map(([p]) => p);
+        const isTied = topPersonas.length > 1;
+
+        if (!isTied) {
+            return {
+                dominantPersona: topPersonas[0],
+                isTied: false,
+                tiedPersonas: [topPersonas[0]],
+            };
+        }
+
+        // Break tie by selecting the tied persona with the highest user preference weight
+        let dominantPersona = topPersonas[0];
+        let highestWeight = -1;
+
+        for (const persona of topPersonas) {
+            const weight = normWeights[persona] ?? 0;
+            if (weight > highestWeight) {
+                highestWeight = weight;
+                dominantPersona = persona;
+            }
+        }
+
+        return {
+            dominantPersona,
+            isTied: true,
+            tiedPersonas: topPersonas,
+        };
     }
 
     private generateConsensusStatement(
         scores: Record<PersonaType, number>,
         finalScore: number,
-        prefs: UserPreferences
+        normWeights: Record<PersonaType, number>,
+        dominantPersona: PersonaType,
+        isTied: boolean,
+        tiedPersonas: PersonaType[]
     ): string {
-        const highestScoringPersona = Object.entries(scores).reduce((a, b) => a[1] > b[1] ? a : b)[0] as PersonaType;
-        const personaName = PERSONA_CONFIGS[highestScoringPersona].name;
+        const entries = Object.entries(scores) as [PersonaType, number][];
+        const maxScore = Math.max(...entries.map(([, s]) => s));
+        const minScore = Math.min(...entries.map(([, s]) => s));
+        const isFullTie = maxScore === minScore;
+
+        const dominantName = PERSONA_CONFIGS[dominantPersona].name;
+
+        // Check if top personas have identical preference weights
+        const tiedWeights = tiedPersonas.map(p => normWeights[p]);
+        const isWeightTied = tiedWeights.length > 1 && Math.max(...tiedWeights) === Math.min(...tiedWeights);
+
+        if (isFullTie) {
+            return `Balanced Consensus (Score ${finalScore}/100): All agents reached an identical score of ${maxScore}/100 across budget, focus, and social perspectives, indicating a well-rounded venue with uniform consensus.`;
+        }
+
+        if (isTied && isWeightTied) {
+            const tiedNames = tiedPersonas.map(p => PERSONA_CONFIGS[p].name).join(' and ');
+            return `Joint Consensus (Score ${finalScore}/100): A tie was reached between ${tiedNames} (both ${maxScore}/100). The venue strikes an even balance across both priorities.`;
+        }
+
+        if (isTied && !isWeightTied) {
+            return `Decisive Consensus (Score ${finalScore}/100): A tie occurred between top personas at ${maxScore}/100, broken in favor of ${dominantName} due to higher user preference weighting.`;
+        }
 
         if (finalScore >= 80) {
-            return `Strong Consensus: The agents agree this is an excellent venue. ${personaName} was particularly impressed, aligning well with your preferences.`;
+            return `Strong Consensus: The agents agree this is an excellent venue. ${dominantName} was particularly impressed, aligning well with your preferences.`;
         } else if (finalScore >= 60) {
-            return `Moderate Consensus: The venue is viable but has trade-offs. ${personaName} found it most appealing, though others noted minor drawbacks.`;
+            return `Moderate Consensus: The venue is viable but has trade-offs. ${dominantName} found it most appealing, though others noted minor drawbacks.`;
         } else {
-            return `Weak Consensus: The agents disagree significantly or find major flaws. ${personaName} was the most optimistic, but overall the venue may not meet your core needs.`;
+            return `Weak Consensus: The agents disagree significantly or find major flaws. ${dominantName} was the most optimistic, but overall the venue may not meet your core needs.`;
         }
     }
 }
