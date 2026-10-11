@@ -83,4 +83,130 @@ describe("Reciprocal Rank Fusion (RRF) Formula & Boundary Guards (#5603)", () =>
       expect(calculateRrfScore(1, 60, Infinity)).toBe(0);
     });
   });
+
+  describe("Typo Tolerance Trigram Fuzzy Matching Fallback (#5771)", () => {
+    let prismaMock: any;
+
+    beforeEach(async () => {
+      const { prisma } = await import("@/lib/prisma");
+      prismaMock = prisma;
+      jest.clearAllMocks();
+    });
+
+    it("triggers Postgres SIMILARITY(name, $query) query when standard ts_query yields 0 rows", async () => {
+      const { searchVenuesWithRrf } = await import("@/lib/search/hybridVenueSearch");
+
+      // First query (standard BM25/vector RRF) returns 0 candidates for typo "startbuks"
+      // Second query (pg_trgm SIMILARITY) returns closest match "Starbucks"
+      (prismaMock.$queryRaw as jest.Mock)
+        .mockResolvedValueOnce([]) // 0 exact/BM25 matches
+        .mockResolvedValueOnce([
+          {
+            id: "venue-starbucks-1",
+            name: "Starbucks Coffee",
+            similarity: 0.72,
+            score: 0.72,
+            needs_embedding: false,
+            search_document: "Starbucks Coffee cafe 123 Main St",
+          },
+        ]);
+
+      const results = await searchVenuesWithRrf("startbuks");
+
+      expect(results).toHaveLength(1);
+      expect(results[0].id).toBe("venue-starbucks-1");
+      expect(results[0].fuzzyMatched).toBe(true);
+      expect(results[0].matchedName).toBe("Starbucks Coffee");
+      expect(results[0].suggestedQuery).toBe("Starbucks Coffee");
+      expect(results.fuzzyMatched).toBe(true);
+      expect(results.suggestedQuery).toBe("Starbucks Coffee");
+
+      // Verify that $queryRaw was called twice: standard search first, then SIMILARITY fallback
+      expect(prismaMock.$queryRaw).toHaveBeenCalledTimes(2);
+
+      // Verify the second query utilizes Postgres SIMILARITY
+      const fuzzyQuerySql = (prismaMock.$queryRaw as jest.Mock).mock.calls[1][0];
+      const sqlString = fuzzyQuerySql.strings.join(" ");
+      expect(sqlString).toContain("SIMILARITY(v.\"name\"");
+      expect(sqlString).toContain("WHERE SIMILARITY(v.\"name\"");
+      expect(sqlString).toContain("ORDER BY SIMILARITY(v.\"name\"");
+    });
+
+    it("does not trigger fuzzy matching fallback when standard search finds matches", async () => {
+      const { searchVenuesWithRrf } = await import("@/lib/search/hybridVenueSearch");
+
+      // First query succeeds with exact match
+      (prismaMock.$queryRaw as jest.Mock).mockResolvedValueOnce([
+        {
+          id: "venue-blue-bottle",
+          score: 0.032,
+          needs_embedding: false,
+          search_document: "Blue Bottle Coffee",
+        },
+      ]);
+
+      const results = await searchVenuesWithRrf("blue bottle");
+
+      expect(results).toHaveLength(1);
+      expect(results[0].id).toBe("venue-blue-bottle");
+      expect(results.fuzzyMatched).toBe(false);
+      expect(results.suggestedQuery).toBeUndefined();
+
+      // Only 1 query executed
+      expect(prismaMock.$queryRaw).toHaveBeenCalledTimes(1);
+    });
+
+    it("returns empty list with fuzzyMatched: false when both exact and fuzzy queries return 0 rows", async () => {
+      const { searchVenuesWithRrf } = await import("@/lib/search/hybridVenueSearch");
+
+      (prismaMock.$queryRaw as jest.Mock)
+        .mockResolvedValueOnce([]) // 0 standard matches
+        .mockResolvedValueOnce([]); // 0 fuzzy matches
+
+      const results = await searchVenuesWithRrf("xyzcompletelynonexistent");
+
+      expect(results).toHaveLength(0);
+      expect(results.fuzzyMatched).toBe(false);
+      expect(results.suggestedQuery).toBeUndefined();
+      expect(prismaMock.$queryRaw).toHaveBeenCalledTimes(2);
+    });
+
+    it("gracefully falls back to in-memory fuzzy search if Postgres pg_trgm query throws", async () => {
+      const { searchVenuesWithRrf } = await import("@/lib/search/hybridVenueSearch");
+
+      (prismaMock.$queryRaw as jest.Mock)
+        .mockResolvedValueOnce([]) // 0 standard matches
+        .mockRejectedValueOnce(new Error("function similarity(text, text) does not exist")); // pg_trgm missing
+
+      (prismaMock.venue.findMany as jest.Mock).mockResolvedValueOnce([
+        {
+          id: "venue-wework",
+          name: "WeWork Space",
+          address: "100 Market St",
+          description: "Coworking office",
+        },
+      ]);
+
+      const results = await searchVenuesWithRrf("wewrok");
+
+      expect(results).toHaveLength(1);
+      expect(results[0].id).toBe("venue-wework");
+      expect(results.fuzzyMatched).toBe(true);
+      expect(results.suggestedQuery).toBe("WeWork Space");
+    });
+
+    it("skips fuzzy matching when enableFuzzyFallback is false", async () => {
+      const { searchVenuesWithRrf } = await import("@/lib/search/hybridVenueSearch");
+
+      (prismaMock.$queryRaw as jest.Mock).mockResolvedValueOnce([]);
+
+      const results = await searchVenuesWithRrf("startbuks", {
+        enableFuzzyFallback: false,
+      });
+
+      expect(results).toHaveLength(0);
+      expect(results.fuzzyMatched).toBe(false);
+      expect(prismaMock.$queryRaw).toHaveBeenCalledTimes(1);
+    });
+  });
 });
