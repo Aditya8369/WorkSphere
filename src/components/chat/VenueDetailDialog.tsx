@@ -42,7 +42,7 @@ import {
 import { useState, useEffect, useMemo, useRef } from "react";
 import { useTranslation } from "react-i18next";
 
-import { Venue } from "./ChatMessages";
+import { Venue } from "@/types/venue";
 import { RatingDistribution } from "./RatingDistribution";
 import { AmenityVoteBreakdownModal } from "./AmenityVoteBreakdownModal";
 import { NoiseReportingWidget } from "@/components/noise/NoiseReportingWidget";
