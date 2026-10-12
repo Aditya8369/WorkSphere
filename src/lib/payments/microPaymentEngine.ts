@@ -133,7 +133,13 @@ export class MicroPaymentEngine {
     let qrPayload = '';
 
     if (rail === 'lightning') {
-      const sats = Math.max(10, Math.ceil(amountUsd * LIVE_EXCHANGE_RATES.satsPerUsd));
+      const calculatedSats = Math.floor(amountUsd * LIVE_EXCHANGE_RATES.satsPerUsd);
+      if (calculatedSats < 1 || !Number.isFinite(calculatedSats)) {
+        throw new Error(
+          "Invalid satoshi amount: payment must be at least 1 satoshi and greater than zero."
+        );
+      }
+      const sats = Math.max(1, calculatedSats);
       amountCrypto = `${sats.toLocaleString()} Sats`;
       cryptoAddressOrInvoice = `lnbc${sats}0n1p3${invoiceId.replace(/-/g, '')}workspheredesk${Math.random().toString(36).substr(2, 12)}`;
       qrPayload = `lightning:${cryptoAddressOrInvoice}`;
@@ -181,4 +187,42 @@ export class MicroPaymentEngine {
     const hex = Math.abs(hash).toString(16).padStart(8, '0');
     return `0x${hex}${Date.now().toString(16)}fa7b99c1e2840`;
   }
+
+  /**
+   * Validates that a satoshi amount is a finite positive integer (at least 1 satoshi)
+   */
+  public static validateSats(sats: number): boolean {
+    return typeof sats === 'number' && Number.isFinite(sats) && !isNaN(sats) && Math.floor(sats) >= 1;
+  }
+}
+
+/**
+ * Validates a satoshi amount and returns a structured validation result
+ */
+export function validateSatoshiAmount(amountInSats: number): {
+  isValid: boolean;
+  error?: string;
+  sats?: number;
+} {
+  if (
+    typeof amountInSats !== "number" ||
+    !Number.isFinite(amountInSats) ||
+    isNaN(amountInSats)
+  ) {
+    return {
+      isValid: false,
+      error: "Invalid Satoshi amount: value must be a valid finite number.",
+    };
+  }
+  const floored = Math.floor(amountInSats);
+  if (floored < 1) {
+    return {
+      isValid: false,
+      error: "Payment amount must be at least 1 Satoshi (cannot be zero or negative).",
+    };
+  }
+  return {
+    isValid: true,
+    sats: floored,
+  };
 }
