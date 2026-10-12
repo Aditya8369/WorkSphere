@@ -1,8 +1,37 @@
 /**
  * acousticGradientEngine.ts
  * Spatial acoustic field decay and Inverse Distance Weighting (IDW) interpolation engine.
- * Computes continuous 2D/3D sound level contours (30dB - 70dB) across workspace floorplans.
+ * Computes continuous 2D/3D sound level contours (20dB - 110dB) across workspace floorplans.
  */
+
+export const MIN_ACOUSTIC_DB = 20; // Sensible acoustic floor (20 dB)
+export const MAX_ACOUSTIC_DB = 110; // Sensible acoustic ceiling (110 dB)
+
+/**
+ * Clamps raw acoustic decibel telemetry inputs between a sensible acoustic floor (20 dB)
+ * and ceiling (110 dB) before calculating normalized shader coordinates or color interpolation.
+ */
+export function clampDecibels(
+  db: number,
+  floor = MIN_ACOUSTIC_DB,
+  ceiling = MAX_ACOUSTIC_DB
+): number {
+  if (Number.isNaN(db)) return floor;
+  return Math.min(ceiling, Math.max(floor, db));
+}
+
+/**
+ * Normalizes acoustic decibels into a 0.0 - 1.0 range, clamped between acoustic floor (20 dB) and ceiling (110 dB).
+ * Used for shader coordinates, color ramp interpolation, and thermal contour mapping.
+ */
+export function normalizeAcousticDecibels(
+  db: number,
+  floor = MIN_ACOUSTIC_DB,
+  ceiling = MAX_ACOUSTIC_DB
+): number {
+  const clamped = clampDecibels(db, floor, ceiling);
+  return Number(((clamped - floor) / (ceiling - floor)).toFixed(4));
+}
 
 export interface SoundEmitter {
   id: string;
@@ -57,23 +86,23 @@ export function clampDecibels(db: number): number {
 
 /**
  * Calculates sound pressure level (SPL) at distance r using inverse square decay with air absorption.
- * Clamps source input and resulting SPL between MIN_ACOUSTIC_DB (20) and MAX_ACOUSTIC_DB (110).
+ * Clamps input source and output SPL between 20 dB and 110 dB.
  */
 export function calculatePointSPL(
   sourceDb: number,
   distanceUnits: number,
   absorptionFactor = 0.08
 ): number {
-  const safeSource = clampDecibels(sourceDb);
-  const r = Math.max(1.0, Number.isFinite(distanceUnits) ? Math.max(0, distanceUnits) : 1.0);
-  const safeAbsorption = Number.isFinite(absorptionFactor) ? absorptionFactor : 0.08;
+  const clampedSourceDb = clampDecibels(sourceDb);
+  const r = Math.max(1.0, distanceUnits);
   // Geometric divergence: 20 * log10(r) + atmospheric/partition absorption
-  const decay = 18 * Math.log10(r) + safeAbsorption * r;
-  return clampDecibels(safeSource - decay);
+  const decay = 18 * Math.log10(r) + absorptionFactor * r;
+  return clampDecibels(Number((clampedSourceDb - decay).toFixed(1)));
 }
 
 /**
  * Generates continuous 2D acoustic gradient grid and evaluates desk sound levels.
+ * Clamps all emitter inputs and resulting grid cells between 20 dB and 110 dB.
  */
 export function generateAcousticField(
   emitters: SoundEmitter[],
@@ -81,7 +110,13 @@ export function generateAcousticField(
   gridWidth = 40,
   gridHeight = 25
 ): AcousticFieldMap {
-  const activeEmitters = emitters.filter((e) => e.isActive);
+  const activeEmitters = emitters
+    .filter((e) => e.isActive)
+    .map((e) => ({
+      ...e,
+      baseDecibels: clampDecibels(e.baseDecibels),
+    }));
+
   const grid: number[][] = [];
 
   for (let r = 0; r < gridHeight; r++) {
@@ -100,7 +135,9 @@ export function generateAcousticField(
         totalLinearEnergy += Math.pow(10, spl / 10);
       }
 
-      const combinedDecibels = clampDecibels(10 * Math.log10(totalLinearEnergy));
+      const combinedDecibels = clampDecibels(
+        Number((10 * Math.log10(totalLinearEnergy)).toFixed(1))
+      );
       row.push(combinedDecibels);
     }
     grid.push(row);
@@ -122,7 +159,9 @@ export function generateAcousticField(
       totalLinearEnergy += Math.pow(10, spl / 10);
     }
 
-    const predictedDecibels = clampDecibels(10 * Math.log10(totalLinearEnergy));
+    const predictedDecibels = clampDecibels(
+      Number((10 * Math.log10(totalLinearEnergy)).toFixed(1))
+    );
 
     // Call suitability: 100 at <= 38dB, drops to 0 at >= 65dB
     const callSuitabilityScore = Math.max(
@@ -153,17 +192,17 @@ export function generateAcousticField(
 
 /**
  * Maps a decibel value to RGBA color for heatmap rendering.
- * Clamps input between [MIN_ACOUSTIC_DB, MAX_ACOUSTIC_DB] before color selection.
+ * Clamps dB between 20 dB and 110 dB before color ramp interpolation.
  */
 export function decibelsToRgba(db: number): [number, number, number, number] {
-  const safeDb = clampDecibels(db);
-  if (safeDb <= 38) {
+  const clampedDb = clampDecibels(db);
+  if (clampedDb <= 38) {
     // Deep Focus Emerald (20-38 dB)
     return [16, 185, 129, 0.75];
-  } else if (safeDb <= 46) {
+  } else if (clampedDb <= 46) {
     // Gentle Cyan (39-46 dB)
     return [6, 182, 212, 0.75];
-  } else if (safeDb <= 56) {
+  } else if (clampedDb <= 56) {
     // Amber Buzz (47-56 dB)
     return [245, 158, 11, 0.8];
   } else {
@@ -171,3 +210,4 @@ export function decibelsToRgba(db: number): [number, number, number, number] {
     return [239, 68, 68, 0.85];
   }
 }
+
