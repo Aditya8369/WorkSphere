@@ -226,4 +226,92 @@ describe("PeerAvatarTile", () => {
       jest.useRealTimers();
     });
   });
+
+  describe("AudioLevelIndicator - Smooth Decibel Decay & Lerp Interpolation (#6155)", () => {
+    const {
+      AudioLevelIndicator,
+      lerpDecay,
+      DEFAULT_DECAY_FACTOR,
+      AUDIO_DECAY_TIMEOUT_MS,
+    } = require("@/components/audio/AudioLevelIndicator");
+
+    it("exports default decay factor of 0.2 and 300ms fallback timeout", () => {
+      expect(DEFAULT_DECAY_FACTOR).toBe(0.2);
+      expect(AUDIO_DECAY_TIMEOUT_MS).toBe(300);
+    });
+
+    describe("lerpDecay formula", () => {
+      it("decays currentLevel towards targetLevel using default decayFactor (0.2)", () => {
+        // current = 1.0, target = 0.0 -> 1.0 + (0 - 1.0) * 0.2 = 0.8
+        expect(lerpDecay(1.0, 0.0, 0.2)).toBeCloseTo(0.8);
+
+        // next frame: current = 0.8, target = 0.0 -> 0.8 + (0 - 0.8) * 0.2 = 0.64
+        expect(lerpDecay(0.8, 0.0, 0.2)).toBeCloseTo(0.64);
+      });
+
+      it("interpolates upwards when targetLevel is greater than currentLevel", () => {
+        // current = 0.2, target = 0.7 -> 0.2 + (0.7 - 0.2) * 0.2 = 0.3
+        expect(lerpDecay(0.2, 0.7, 0.2)).toBeCloseTo(0.3);
+      });
+
+      it("supports custom decay factors", () => {
+        expect(lerpDecay(1.0, 0.0, 0.5)).toBeCloseTo(0.5);
+        expect(lerpDecay(1.0, 0.0, 0.1)).toBeCloseTo(0.9);
+      });
+    });
+
+    describe("AudioLevelIndicator Component rendering with smooth decay", () => {
+      it("renders initial level immediately without harsh jumping", () => {
+        render(<AudioLevelIndicator level={0.8} />);
+        const meter = screen.getByRole("meter");
+        expect(meter).toBeInTheDocument();
+        expect(meter).toHaveAttribute("aria-valuenow", "80");
+      });
+
+      it("renders 0% when muted", () => {
+        render(<AudioLevelIndicator level={0.8} muted={true} />);
+        const meter = screen.getByRole("meter");
+        expect(meter).toHaveAttribute("aria-valuenow", "0");
+        expect(meter).toHaveAttribute("aria-label", "Audio muted");
+      });
+
+      it("smoothly interpolates decay across animation frames when volume drops", () => {
+        let frameCallback: FrameRequestCallback | null = null;
+        jest.spyOn(window, "requestAnimationFrame").mockImplementation((cb) => {
+          frameCallback = cb;
+          return 123;
+        });
+        const cancelSpy = jest.spyOn(window, "cancelAnimationFrame").mockImplementation(() => {});
+
+        const { rerender } = render(<AudioLevelIndicator level={1.0} />);
+        expect(screen.getByRole("meter")).toHaveAttribute("aria-valuenow", "100");
+
+        // Now volume drops to 0.0
+        rerender(<AudioLevelIndicator level={0.0} />);
+
+        // Execute animation frame
+        if (frameCallback) {
+          act(() => {
+            (frameCallback as FrameRequestCallback)(performance.now());
+          });
+        }
+
+        // Value should have decayed smoothly (around ~80% instead of dropping instantly to 0)
+        const ariaVal = parseInt(screen.getByRole("meter").getAttribute("aria-valuenow") || "0", 10);
+        expect(ariaVal).toBeLessThan(100);
+        expect(ariaVal).toBeGreaterThan(0);
+
+        cancelSpy.mockRestore();
+        (window.requestAnimationFrame as jest.Mock).mockRestore();
+      });
+
+      it("cleans up requestAnimationFrame on unmount", () => {
+        const cancelSpy = jest.spyOn(window, "cancelAnimationFrame");
+        const { unmount } = render(<AudioLevelIndicator level={0.5} />);
+        unmount();
+        expect(cancelSpy).toHaveBeenCalled();
+        cancelSpy.mockRestore();
+      });
+    });
+  });
 });
