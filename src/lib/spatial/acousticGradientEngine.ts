@@ -40,18 +40,36 @@ export interface AcousticFieldMap {
   desks: DeskSoundRating[];
 }
 
+export const MIN_ACOUSTIC_DB = 20;
+export const MAX_ACOUSTIC_DB = 110;
+export const DEFAULT_AMBIENT_DB = 40;
+
+/**
+ * Clamps decibel values within the safe, physically realistic SPL range [20, 110] dB.
+ * Falls back to ambient baseline (40 dB) if value is NaN or non-finite.
+ */
+export function clampDecibels(db: number): number {
+  if (typeof db !== "number" || !Number.isFinite(db)) {
+    return DEFAULT_AMBIENT_DB;
+  }
+  return Math.min(MAX_ACOUSTIC_DB, Math.max(MIN_ACOUSTIC_DB, Number(db.toFixed(1))));
+}
+
 /**
  * Calculates sound pressure level (SPL) at distance r using inverse square decay with air absorption.
+ * Clamps source input and resulting SPL between MIN_ACOUSTIC_DB (20) and MAX_ACOUSTIC_DB (110).
  */
 export function calculatePointSPL(
   sourceDb: number,
   distanceUnits: number,
   absorptionFactor = 0.08
 ): number {
-  const r = Math.max(1.0, distanceUnits);
+  const safeSource = clampDecibels(sourceDb);
+  const r = Math.max(1.0, Number.isFinite(distanceUnits) ? Math.max(0, distanceUnits) : 1.0);
+  const safeAbsorption = Number.isFinite(absorptionFactor) ? absorptionFactor : 0.08;
   // Geometric divergence: 20 * log10(r) + atmospheric/partition absorption
-  const decay = 18 * Math.log10(r) + absorptionFactor * r;
-  return Math.max(30, Number((sourceDb - decay).toFixed(1)));
+  const decay = 18 * Math.log10(r) + safeAbsorption * r;
+  return clampDecibels(safeSource - decay);
 }
 
 /**
@@ -82,10 +100,7 @@ export function generateAcousticField(
         totalLinearEnergy += Math.pow(10, spl / 10);
       }
 
-      const combinedDecibels = Math.min(
-        75,
-        Math.max(30, Number((10 * Math.log10(totalLinearEnergy)).toFixed(1)))
-      );
+      const combinedDecibels = clampDecibels(10 * Math.log10(totalLinearEnergy));
       row.push(combinedDecibels);
     }
     grid.push(row);
@@ -107,10 +122,7 @@ export function generateAcousticField(
       totalLinearEnergy += Math.pow(10, spl / 10);
     }
 
-    const predictedDecibels = Math.min(
-      75,
-      Math.max(30, Number((10 * Math.log10(totalLinearEnergy)).toFixed(1)))
-    );
+    const predictedDecibels = clampDecibels(10 * Math.log10(totalLinearEnergy));
 
     // Call suitability: 100 at <= 38dB, drops to 0 at >= 65dB
     const callSuitabilityScore = Math.max(
@@ -141,19 +153,21 @@ export function generateAcousticField(
 
 /**
  * Maps a decibel value to RGBA color for heatmap rendering.
+ * Clamps input between [MIN_ACOUSTIC_DB, MAX_ACOUSTIC_DB] before color selection.
  */
 export function decibelsToRgba(db: number): [number, number, number, number] {
-  if (db <= 38) {
-    // Deep Focus Emerald (30-38 dB)
+  const safeDb = clampDecibels(db);
+  if (safeDb <= 38) {
+    // Deep Focus Emerald (20-38 dB)
     return [16, 185, 129, 0.75];
-  } else if (db <= 46) {
+  } else if (safeDb <= 46) {
     // Gentle Cyan (39-46 dB)
     return [6, 182, 212, 0.75];
-  } else if (db <= 56) {
+  } else if (safeDb <= 56) {
     // Amber Buzz (47-56 dB)
     return [245, 158, 11, 0.8];
   } else {
-    // Noise Hazard Crimson (>56 dB)
+    // Noise Hazard Crimson (>56 dB up to 110 dB)
     return [239, 68, 68, 0.85];
   }
 }
