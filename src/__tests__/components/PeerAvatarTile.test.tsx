@@ -1,5 +1,8 @@
 import { render, screen, act } from "@testing-library/react";
-import { PeerAvatarTile } from "@/components/audio/PeerAvatarTile";
+import {
+  PeerAvatarTile,
+  calculateDecibelVolume,
+} from "@/components/audio/PeerAvatarTile";
 
 // Mock usePeakDecayLevel so tests control the smoothed audio level directly
 jest.mock("@/hooks/usePeakDecayLevel", () => ({
@@ -227,91 +230,184 @@ describe("PeerAvatarTile", () => {
     });
   });
 
-  describe("AudioLevelIndicator - Smooth Decibel Decay & Lerp Interpolation (#6155)", () => {
-    const {
-      AudioLevelIndicator,
-      lerpDecay,
-      DEFAULT_DECAY_FACTOR,
-      AUDIO_DECAY_TIMEOUT_MS,
-    } = require("@/components/audio/AudioLevelIndicator");
+  describe("Radiating Circular Hard-Light Energy Shockwaves", () => {
+    it("calculates decibel volume from amplitude correctly", () => {
+      // Silence
+      const silent = calculateDecibelVolume(0);
+      expect(silent.decibels).toBe(-60);
+      expect(silent.normalizedDb).toBe(0);
 
-    it("exports default decay factor of 0.2 and 300ms fallback timeout", () => {
-      expect(DEFAULT_DECAY_FACTOR).toBe(0.2);
-      expect(AUDIO_DECAY_TIMEOUT_MS).toBe(300);
+      // Peak volume
+      const peak = calculateDecibelVolume(1.0);
+      expect(peak.decibels).toBe(0);
+      expect(peak.normalizedDb).toBe(1);
+
+      // Moderate volume (0.1 amplitude => ~ -20 dB)
+      const moderate = calculateDecibelVolume(0.1);
+      expect(moderate.decibels).toBe(-20);
+      expect(moderate.normalizedDb).toBe(0.6);
     });
 
-    describe("lerpDecay formula", () => {
-      it("decays currentLevel towards targetLevel using default decayFactor (0.2)", () => {
-        // current = 1.0, target = 0.0 -> 1.0 + (0 - 1.0) * 0.2 = 0.8
-        expect(lerpDecay(1.0, 0.0, 0.2)).toBeCloseTo(0.8);
+    it("renders radiating circular hard-light energy shockwaves when participant speaks", () => {
+      render(
+        <PeerAvatarTile
+          {...defaultProps}
+          audioEnabled={true}
+          isSpeaking={true}
+          audioLevel={0.6}
+        />,
+      );
 
-        // next frame: current = 0.8, target = 0.0 -> 0.8 + (0 - 0.8) * 0.2 = 0.64
-        expect(lerpDecay(0.8, 0.0, 0.2)).toBeCloseTo(0.64);
-      });
+      const shockwaves = screen.getByTestId("radiating-shockwaves");
+      expect(shockwaves).toBeInTheDocument();
 
-      it("interpolates upwards when targetLevel is greater than currentLevel", () => {
-        // current = 0.2, target = 0.7 -> 0.2 + (0.7 - 0.2) * 0.2 = 0.3
-        expect(lerpDecay(0.2, 0.7, 0.2)).toBeCloseTo(0.3);
-      });
+      const ring1 = screen.getByTestId("shockwave-ring-1");
+      const ring2 = screen.getByTestId("shockwave-ring-2");
+      const ring3 = screen.getByTestId("shockwave-ring-3");
 
-      it("supports custom decay factors", () => {
-        expect(lerpDecay(1.0, 0.0, 0.5)).toBeCloseTo(0.5);
-        expect(lerpDecay(1.0, 0.0, 0.1)).toBeCloseTo(0.9);
-      });
+      expect(ring1).toBeInTheDocument();
+      expect(ring2).toBeInTheDocument();
+      expect(ring3).toBeInTheDocument();
+
+      expect(ring1).toHaveClass("border-emerald-400");
+      expect(ring2).toHaveClass("border-emerald-400/70");
+      expect(ring3).toHaveClass("border-emerald-300/40");
     });
 
-    describe("AudioLevelIndicator Component rendering with smooth decay", () => {
-      it("renders initial level immediately without harsh jumping", () => {
-        render(<AudioLevelIndicator level={0.8} />);
-        const meter = screen.getByRole("meter");
-        expect(meter).toBeInTheDocument();
-        expect(meter).toHaveAttribute("aria-valuenow", "80");
-      });
+    it("modulates ripple wave radius scale and opacity based on decibel volume", () => {
+      const { unmount } = render(
+        <PeerAvatarTile
+          {...defaultProps}
+          audioEnabled={true}
+          isSpeaking={true}
+          audioLevel={0.05}
+        />,
+      );
 
-      it("renders 0% when muted", () => {
-        render(<AudioLevelIndicator level={0.8} muted={true} />);
-        const meter = screen.getByRole("meter");
-        expect(meter).toHaveAttribute("aria-valuenow", "0");
-        expect(meter).toHaveAttribute("aria-label", "Audio muted");
-      });
+      const lowRing1 = screen.getByTestId("shockwave-ring-1");
+      const lowTransform = lowRing1.style.transform;
+      const lowOpacity = parseFloat(lowRing1.style.opacity);
+      unmount();
 
-      it("smoothly interpolates decay across animation frames when volume drops", () => {
-        let frameCallback: FrameRequestCallback | null = null;
-        jest.spyOn(window, "requestAnimationFrame").mockImplementation((cb) => {
-          frameCallback = cb;
-          return 123;
+      render(
+        <PeerAvatarTile
+          {...defaultProps}
+          audioEnabled={true}
+          isSpeaking={true}
+          audioLevel={0.95}
+        />,
+      );
+
+      const highRing1 = screen.getByTestId("shockwave-ring-1");
+      const highTransform = highRing1.style.transform;
+      const highOpacity = parseFloat(highRing1.style.opacity);
+
+      // Extract scales
+      const getScale = (tf: string) => {
+        const match = tf.match(/scale\(([^)]+)\)/);
+        return match ? parseFloat(match[1]) : 0;
+      };
+
+      expect(getScale(highTransform)).toBeGreaterThan(getScale(lowTransform));
+      expect(highOpacity).toBeGreaterThan(lowOpacity);
+    });
+
+    it("cleans up CSS animations and removes shockwaves on audio track silence", () => {
+      const { rerender } = render(
+        <PeerAvatarTile
+          {...defaultProps}
+          audioEnabled={true}
+          isSpeaking={true}
+          audioLevel={0.5}
+        />,
+      );
+
+      expect(screen.getByTestId("radiating-shockwaves")).toBeInTheDocument();
+
+      // Audio becomes silent
+      rerender(
+        <PeerAvatarTile
+          {...defaultProps}
+          audioEnabled={true}
+          isSpeaking={false}
+          audioLevel={0}
+        />,
+      );
+
+      expect(
+        screen.queryByTestId("radiating-shockwaves"),
+      ).not.toBeInTheDocument();
+    });
+
+    it("cleans up shockwaves when audio is muted even if isSpeaking was true", () => {
+      render(
+        <PeerAvatarTile
+          {...defaultProps}
+          audioEnabled={false}
+          isSpeaking={true}
+          audioLevel={0.5}
+        />,
+      );
+
+      expect(
+        screen.queryByTestId("radiating-shockwaves"),
+      ).not.toBeInTheDocument();
+    });
+
+    it("initializes and cleans up Web Audio AnalyserNode when stream is provided", () => {
+      const mockConnect = jest.fn();
+      const mockDisconnect = jest.fn();
+      const mockClose = jest.fn();
+      const mockGetByteFrequencyData = jest.fn();
+
+      class MockAudioContext {
+        state = "running";
+        createMediaStreamSource = jest.fn().mockReturnValue({
+          connect: mockConnect,
+          disconnect: mockDisconnect,
         });
-        const cancelSpy = jest.spyOn(window, "cancelAnimationFrame").mockImplementation(() => {});
+        createAnalyser = jest.fn().mockReturnValue({
+          fftSize: 256,
+          smoothingTimeConstant: 0.3,
+          frequencyBinCount: 128,
+          getByteFrequencyData: mockGetByteFrequencyData,
+        });
+        close = mockClose;
+      }
 
-        const { rerender } = render(<AudioLevelIndicator level={1.0} />);
-        expect(screen.getByRole("meter")).toHaveAttribute("aria-valuenow", "100");
+      // @ts-expect-error mocking AudioContext
+      window.AudioContext = MockAudioContext;
 
-        // Now volume drops to 0.0
-        rerender(<AudioLevelIndicator level={0.0} />);
+      const mockTrack = {
+        kind: "audio",
+        enabled: true,
+        muted: false,
+        addEventListener: jest.fn(),
+        removeEventListener: jest.fn(),
+      };
 
-        // Execute animation frame
-        if (frameCallback) {
-          act(() => {
-            (frameCallback as FrameRequestCallback)(performance.now());
-          });
-        }
+      const mockStream = {
+        getAudioTracks: () => [mockTrack],
+        getVideoTracks: () => [],
+        addEventListener: jest.fn(),
+        removeEventListener: jest.fn(),
+      } as unknown as MediaStream;
 
-        // Value should have decayed smoothly (around ~80% instead of dropping instantly to 0)
-        const ariaVal = parseInt(screen.getByRole("meter").getAttribute("aria-valuenow") || "0", 10);
-        expect(ariaVal).toBeLessThan(100);
-        expect(ariaVal).toBeGreaterThan(0);
+      const { unmount } = render(
+        <PeerAvatarTile
+          {...defaultProps}
+          stream={mockStream}
+          audioEnabled={true}
+          isSpeaking={false}
+        />,
+      );
 
-        cancelSpy.mockRestore();
-        (window.requestAnimationFrame as jest.Mock).mockRestore();
-      });
+      expect(mockConnect).toHaveBeenCalled();
 
-      it("cleans up requestAnimationFrame on unmount", () => {
-        const cancelSpy = jest.spyOn(window, "cancelAnimationFrame");
-        const { unmount } = render(<AudioLevelIndicator level={0.5} />);
-        unmount();
-        expect(cancelSpy).toHaveBeenCalled();
-        cancelSpy.mockRestore();
-      });
+      unmount();
+
+      expect(mockDisconnect).toHaveBeenCalled();
+      expect(mockClose).toHaveBeenCalled();
     });
   });
 });
