@@ -84,10 +84,13 @@ export function CollectionUpvoteButton({
     <button
       type="button"
       onClick={handleToggleUpvote}
-      disabled={isLoading}
-      aria-busy={isLoading}
-      aria-pressed={hasUpvoted}
-      aria-label={`Upvote collection (${upvotes} upvotes)`}
+      disabled={isPending}
+      aria-pressed={Boolean(hasUpvoted)}
+      aria-label={
+        hasUpvoted
+          ? `Remove upvote (${upvotes} upvotes)`
+          : `Upvote collection (${upvotes} upvotes)`
+      }
       className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold transition-all border ${
         hasUpvoted
           ? "accent-bg accent-border text-white shadow-sm shadow-[var(--primary-accent)]/20 scale-105"
