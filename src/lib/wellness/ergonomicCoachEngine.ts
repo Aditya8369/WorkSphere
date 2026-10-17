@@ -32,7 +32,11 @@ export interface ErgonomicSessionState {
   waterTargetMl: number;
   eyeBreaksCompleted: number;
   skippedBreaksCount: number;
+  transitionsCount?: number;
+  targetSitStandRatio?: number;
 }
+
+export * from './deskPostureAnalytics';
 
 export interface ErgonomicStrainScore {
   score: number; // 0 - 100 (100 is optimal, <40 is critical fatigue)
@@ -271,4 +275,20 @@ export class ErgonomicCoachEngine {
     const index = state.completedStretches.length % MICRO_STRETCH_CATALOG.length;
     return MICRO_STRETCH_CATALOG[index];
   }
+
+  /**
+   * Calculates real-time sitting vs. standing duration ratio metrics
+   */
+  public static calculateSitStandRatio(sittingSeconds: number, standingSeconds: number) {
+    return calculateSitStandRatio(sittingSeconds, standingSeconds);
+  }
+
+  /**
+   * Computes weekly summary analytics from daily records or default weekly history
+   */
+  public static computeWeeklySummary(dailyRecords?: DailyPostureRecord[], targetRatio = 2.0) {
+    const records = dailyRecords && dailyRecords.length > 0 ? dailyRecords : generateSampleWeeklyPostureHistory(targetRatio);
+    return computeWeeklyDeskSummary(records, targetRatio);
+  }
 }
+
