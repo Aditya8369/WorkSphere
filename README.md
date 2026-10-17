@@ -767,9 +767,9 @@ A massive thank you to all **111 brilliant contributors and bots** building Work
       </a>
     </td>
     <td align="center" width="14.28%">
-      <a href="https://github.com/codinggujarat">
-        <img src="https://avatars.githubusercontent.com/u/155058144?v=4" width="55px;" height="55px;" alt="codinggujarat" style="border-radius: 50%; object-fit: cover;"/><br />
-        <sub><b>codinggujarat</b></sub>
+      <a href="https://github.com/shlok926">
+        <img src="https://avatars.githubusercontent.com/u/183689833?v=4" width="55px;" height="55px;" alt="shlok926" style="border-radius: 50%; object-fit: cover;"/><br />
+        <sub><b>shlok926</b></sub>
       </a>
     </td>
     <td align="center" width="14.28%"></td>
