@@ -151,7 +151,14 @@ export function bookingsToCSV(bookings: ExportableBooking[]): string {
 export function taxBookingsToCSV(bookings: ExportableBooking[]): string {
   return bookingsToCSV(bookings);
 }
-
+/**
+ * Exports booking data as formatted JSON.
+ */
+export function exportBookingsToJson(
+  bookings: ExportableBooking[],
+): string {
+  return JSON.stringify(bookings, null, 2);
+}
 export async function generateTaxExportPdf(
   bookings: any[],
 ): Promise<Uint8Array> {

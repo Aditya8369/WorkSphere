@@ -65,6 +65,7 @@ export interface TaxTotals {
  * Computes totals using the same flat-rate assumption used elsewhere in the codebase
  * ($15/hr, 8% flat tax) until real price/tax fields exist on Booking.
  */
+
 export function computeTaxTotals(
   bookings: { duration?: number | null }[],
 ): TaxTotals {
@@ -75,6 +76,7 @@ export function computeTaxTotals(
     const raw = b.duration ?? 1;
     const hours = !Number.isFinite(raw) ? 1 : Math.max(0, raw);
     const price = hours * 15;
+
     subtotal += price;
     tax += Number((price * 0.08).toFixed(2));
   }
@@ -87,6 +89,7 @@ export function computeTaxTotals(
   };
 }
 
+
 /**
  * Builds the tax-export CSV, reusing the existing bookingsToCSV formatter
  * so column formatting/escaping stays consistent with the rest of the app.
@@ -94,3 +97,7 @@ export function computeTaxTotals(
 export function taxBookingsToCSV(bookings: ExportableBooking[]): string {
   return bookingsToCSV(bookings);
 }
+
+/**
+ * Exports booking data as formatted JSON.
+ */

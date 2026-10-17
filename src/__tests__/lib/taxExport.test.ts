@@ -1,4 +1,10 @@
-import { resolveDateRange, filterBookingsByRange, computeTaxTotals } from "@/lib/taxExport";
+import {
+  resolveDateRange,
+  filterBookingsByRange,
+  computeTaxTotals,
+} from "@/lib/taxExport";
+
+import { exportBookingsToJson } from "@/lib/pdfHelpers";
 
 describe("resolveDateRange", () => {
   it("resolves a tax year to Jan 1 - Dec 31", () => {
@@ -46,15 +52,15 @@ describe("filterBookingsByRange", () => {
 });
 
 describe("computeTaxTotals", () => {
-  it("computes subtotal/tax/total using the flat $15/hr, 8% assumption with duration in minutes", () => {
-    const totals = computeTaxTotals([{ duration: 120 }, { duration: 60 }]);
-    // ((120/60)*15 + (60/60)*15) = 45 subtotal, 8% = 3.6 tax
-    expect(totals.subtotal).toBe(45);
-    expect(totals.tax).toBe(3.6);
-    expect(totals.total).toBe(48.6);
-    expect(totals.count).toBe(2);
-  });
 
+  it("computes subtotal/tax/total using the flat $15/hr, 8% assumption", () => {
+  const totals = computeTaxTotals([{ duration: 2 }, { duration: 1 }]);
+
+  expect(totals.subtotal).toBe(45);
+  expect(totals.tax).toBe(3.6);
+  expect(totals.total).toBe(48.6);
+  expect(totals.count).toBe(2);
+});
   it("defaults missing duration to 60 minutes (1 hour)", () => {
     const totals = computeTaxTotals([{}]);
     expect(totals.subtotal).toBe(15);
@@ -70,5 +76,35 @@ describe("computeTaxTotals", () => {
     expect(negativeTotals.subtotal).toBe(0);
     expect(negativeTotals.tax).toBe(0);
     expect(negativeTotals.total).toBe(0);
+  });
+});
+describe("exportBookingsToJson", () => {
+  it("exports bookings as formatted JSON", () => {
+    const bookings = [
+      {
+        id: "booking-1",
+        confirmationId: "CONF123",
+        date: "2025-05-10",
+        time: "10:00",
+        duration: 60,
+        projectBillingCode: "PROJECT-001",
+        venue: {
+          name: "Test Venue",
+          category: "Meeting Room",
+          address: "123 Test Street",
+        },
+      },
+    ];
+
+    const result = exportBookingsToJson(bookings);
+
+    expect(JSON.parse(result)).toEqual(bookings);
+    expect(result).toContain("\n");
+  });
+
+  it("exports an empty bookings array as valid JSON", () => {
+    const result = exportBookingsToJson([]);
+
+    expect(JSON.parse(result)).toEqual([]);
   });
 });
